@@ -2,6 +2,8 @@ const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANO
 
 const FORMAS_PAGO = ['Efectivo', 'Tarjeta', 'Transferencia', 'Bizum'];
 const ESTADOS = ['Pendiente', 'Pagado', 'Parcial'];
+const ISABEL_EMAIL = 'iperezfraile@gmail.com';
+let currentUserEmail = '';
 
 const EMPTY_FORM = {
   id: null,
@@ -33,6 +35,7 @@ async function initAuth() {
     return null;
   }
   document.getElementById('userLabel').textContent = `Conectado como ${data.session.user.email}`;
+  currentUserEmail = (data.session.user.email || '').toLowerCase();
   return data.session;
 }
 
@@ -227,6 +230,10 @@ function renderTable() {
     Parcial: 'color:var(--blue); background:#E7ECF1; border-color:var(--blue);',
   };
 
+  const isabelView = currentUserEmail === ISABEL_EMAIL;
+  const headers = ['Fecha', 'Paciente', 'Responsable', 'Psicóloga', 'Centro/Modalidad', 'Servicio', 'Precio', 'Forma pago', 'Ingreso banco', 'Estado', 'Quipu', ''];
+  if (isabelView) headers.splice(3, 0, 'Introducido por');
+
   container.innerHTML = Object.entries(grouped).map(([month, rows]) => `
     <div style="margin-bottom:28px;">
       <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid var(--sage-deep); padding-bottom:6px; margin-bottom:8px;">
@@ -236,7 +243,7 @@ function renderTable() {
       <div class="card table-scroll">
         <table>
           <thead><tr>
-            ${['Fecha', 'Paciente', 'Responsable', 'Psicóloga', 'Centro/Modalidad', 'Servicio', 'Precio', 'Forma pago', 'Ingreso banco', 'Estado', 'Quipu', ''].map((h) => `<th>${h}</th>`).join('')}
+            ${headers.map((h) => `<th>${h}</th>`).join('')}
           </tr></thead>
           <tbody>
             ${rows.map((s) => `
@@ -244,6 +251,7 @@ function renderTable() {
                 <td class="mono" style="white-space:nowrap;">${s.fecha_sesion}</td>
                 <td style="font-weight:500;">${esc(s.paciente)}</td>
                 <td>${esc(s.responsable_pago)}</td>
+                ${isabelView ? `<td style="font-size:12px; color:var(--ink-soft);">${esc(s.creado_por || '')}</td>` : ''}
                 <td>${esc(s.psicologa)}</td>
                 <td>${esc(s.centro)}</td>
                 <td>${esc(s.tipo_servicio)}</td>
@@ -388,6 +396,7 @@ function exportExcel() {
     'Fecha ingreso banco': s.fecha_ingreso_banco || '',
     'Estado pago': s.estado_pago,
     'Contabilizado Quipu': s.quipu ? 'Sí' : 'No',
+    'Introducido por': s.creado_por || '',
   }));
   const ws = XLSX.utils.json_to_sheet(rows);
   ws['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 }];
