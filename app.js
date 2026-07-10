@@ -2,8 +2,16 @@ const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANO
 
 const FORMAS_PAGO = ['Efectivo', 'Tarjeta', 'Transferencia', 'Bizum'];
 const ESTADOS = ['Pendiente', 'Pagado', 'Parcial'];
+const MODALIDADES = ['Presencial', 'Online'];
 const ISABEL_EMAIL = 'iperezfraile@gmail.com';
+const DAVID_CENTRO = 'Centro David';
+const DAVID_ALQUILER = 30;
+const PORCENTAJE_SERGIO = 0.6;
 let currentUserEmail = '';
+
+function alquilerDavid(s) {
+  return (s.centro === DAVID_CENTRO && s.modalidad === 'Presencial') ? DAVID_ALQUILER : 0;
+}
 
 const EMPTY_FORM = {
   id: null,
@@ -12,6 +20,7 @@ const EMPTY_FORM = {
   responsable_pago: '',
   psicologa: '',
   centro: '',
+  modalidad: '',
   tipo_servicio: '',
   precio: '',
   forma_pago: '',
@@ -95,6 +104,7 @@ async function saveForm(e) {
     responsable_pago: form.responsable_pago,
     psicologa: form.psicologa,
     centro: form.centro,
+    modalidad: form.modalidad,
     tipo_servicio: form.tipo_servicio,
     precio: parseFloat(form.precio) || 0,
     forma_pago: form.forma_pago,
@@ -171,7 +181,10 @@ function getStats() {
   const cobrado = thisMonth.filter((s) => s.estado_pago === 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const pendiente = thisMonth.filter((s) => s.estado_pago !== 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const sinQuipu = sessions.filter((s) => s.estado_pago === 'Pagado' && !s.quipu).length;
-  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel };
+  const facturado = thisMonth.reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
+  const alquiler = thisMonth.reduce((a, s) => a + alquilerDavid(s), 0);
+  const aSergio = facturado * PORCENTAJE_SERGIO;
+  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel, facturado, alquiler, aSergio };
 }
 
 // ---------- Rendering ----------
@@ -185,9 +198,12 @@ function renderStats() {
   const s = getStats();
   const cards = [
     { label: s.label, value: String(s.count), sub: 'sesiones este mes', color: 'var(--blue)' },
+    { label: 'Facturado', value: eur(s.facturado), sub: 'total del mes', color: 'var(--sage-deep)' },
     { label: 'Cobrado', value: eur(s.cobrado), sub: 'este mes', color: 'var(--sage)' },
     { label: 'Pendiente', value: eur(s.pendiente), sub: 'por cobrar este mes', color: 'var(--ochre)' },
     { label: 'Sin Quipu', value: String(s.sinQuipu), sub: 'pagos sin contabilizar', color: 'var(--stamp-red)' },
+    { label: 'Alquiler David', value: eur(s.alquiler), sub: 'centro presencial, este mes', color: 'var(--blue)' },
+    { label: `A facturar a Sergio (${Math.round(PORCENTAJE_SERGIO * 100)}%)`, value: eur(s.aSergio), sub: 'sobre el total facturado', color: 'var(--sage-deep)' },
   ];
   document.getElementById('stats').innerHTML = cards.map((c) => `
     <div class="stat-card" style="border-left-color:${c.color};">
@@ -231,7 +247,7 @@ function renderTable() {
   };
 
   const isabelView = currentUserEmail === ISABEL_EMAIL;
-  const headers = ['Fecha', 'Paciente', 'Responsable', 'Psicóloga', 'Centro/Modalidad', 'Servicio', 'Precio', 'Forma pago', 'Ingreso banco', 'Estado', 'Quipu', ''];
+  const headers = ['Fecha', 'Paciente', 'Responsable', 'Psicóloga', 'Centro', 'Modalidad', 'Servicio', 'Precio', 'Forma pago', 'Ingreso banco', 'Estado', 'Quipu', ''];
   if (isabelView) headers.splice(3, 0, 'Introducido por');
 
   container.innerHTML = Object.entries(grouped).map(([month, rows]) => `
@@ -253,7 +269,8 @@ function renderTable() {
                 <td>${esc(s.responsable_pago)}</td>
                 ${isabelView ? `<td style="font-size:12px; color:var(--ink-soft);">${esc(s.creado_por || '')}</td>` : ''}
                 <td>${esc(s.psicologa)}</td>
-                <td>${esc(s.centro)}</td>
+                <td>${esc(s.centro)}${alquilerDavid(s) ? `<br><span class="stamp" style="color:var(--blue); background:#E7ECF1; border-color:var(--blue); font-size:9px; margin-top:2px;">+${DAVID_ALQUILER}€ David</span>` : ''}</td>
+                <td>${esc(s.modalidad)}</td>
                 <td>${esc(s.tipo_servicio)}</td>
                 <td class="mono" style="white-space:nowrap;">${eur(s.precio)}</td>
                 <td>${esc(s.forma_pago)}</td>
@@ -324,7 +341,8 @@ function renderModal() {
           ${fieldHtml('Nombre paciente', `<input name="paciente" list="dl_pacientes" required value="${esc(form.paciente)}" />${dl('dl_pacientes', o.pacientes)}`)}
           ${fieldHtml('Responsable de pago', `<input name="responsable_pago" value="${esc(form.responsable_pago)}" />`)}
           ${fieldHtml('Psicóloga', `<input name="psicologa" list="dl_psicologas" value="${esc(form.psicologa)}" />${dl('dl_psicologas', o.psicologas)}`)}
-          ${fieldHtml('Centro / modalidad', `<input name="centro" list="dl_centros" value="${esc(form.centro)}" />${dl('dl_centros', o.centros)}`)}
+          ${fieldHtml('Centro', `<input name="centro" list="dl_centros" value="${esc(form.centro)}" />${dl('dl_centros', [...new Set([DAVID_CENTRO, 'Online', ...o.centros])])}`)}
+          ${fieldHtml('Modalidad', `<select name="modalidad"><option value="">—</option>${MODALIDADES.map((m) => `<option ${m === form.modalidad ? 'selected' : ''}>${m}</option>`).join('')}</select>`)}
           ${fieldHtml('Tipo de servicio', `<input name="tipo_servicio" list="dl_tipos" value="${esc(form.tipo_servicio)}" />${dl('dl_tipos', o.tipos)}`)}
           ${fieldHtml('Precio (€)', `<input type="number" step="0.01" min="0" name="precio" value="${esc(form.precio)}" />`)}
           ${fieldHtml('Forma de pago', `<select name="forma_pago"><option value="">—</option>${FORMAS_PAGO.map((f) => `<option ${f === form.forma_pago ? 'selected' : ''}>${f}</option>`).join('')}</select>`)}
@@ -366,6 +384,7 @@ function renderModal() {
       responsable_pago: formEl.responsable_pago.value,
       psicologa: formEl.psicologa.value,
       centro: formEl.centro.value,
+      modalidad: formEl.modalidad.value,
       tipo_servicio: formEl.tipo_servicio.value,
       precio: formEl.precio.value,
       forma_pago: formEl.forma_pago.value,
@@ -384,22 +403,29 @@ function renderModal() {
 // ---------- Excel export ----------
 function exportExcel() {
   const filtered = getFiltered();
-  const rows = filtered.map((s) => ({
-    'Fecha sesión': s.fecha_sesion,
-    'Paciente': s.paciente,
-    'Responsable pago': s.responsable_pago,
-    'Psicóloga': s.psicologa,
-    'Centro/Modalidad': s.centro,
-    'Tipo servicio': s.tipo_servicio,
-    'Precio': parseFloat(s.precio) || 0,
-    'Forma de pago': s.forma_pago,
-    'Fecha ingreso banco': s.fecha_ingreso_banco || '',
-    'Estado pago': s.estado_pago,
-    'Contabilizado Quipu': s.quipu ? 'Sí' : 'No',
-    'Introducido por': s.creado_por || '',
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{ wch: 12 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 18 }, { wch: 18 }, { wch: 10 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 12 }];
+  const totalFacturado = filtered.reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
+  const totalAlquilerDavid = filtered.reduce((a, s) => a + alquilerDavid(s), 0);
+  const totalASergio = totalFacturado * PORCENTAJE_SERGIO;
+
+  const headers = ['Fecha sesión', 'Paciente', 'Responsable pago', 'Psicóloga', 'Centro', 'Modalidad', 'Tipo servicio', 'Precio', 'Alquiler David', 'Forma de pago', 'Fecha ingreso banco', 'Estado pago', 'Contabilizado Quipu', 'Introducido por'];
+  const dataRows = filtered.map((s) => [
+    s.fecha_sesion, s.paciente, s.responsable_pago, s.psicologa, s.centro, s.modalidad, s.tipo_servicio,
+    parseFloat(s.precio) || 0, alquilerDavid(s), s.forma_pago, s.fecha_ingreso_banco || '', s.estado_pago,
+    s.quipu ? 'Sí' : 'No', s.creado_por || '',
+  ]);
+
+  const summary = [
+    ['Resumen', ''],
+    ['Total facturado', totalFacturado],
+    ['Alquiler a David (centro presencial)', totalAlquilerDavid],
+    [`A facturar a Sergio (${Math.round(PORCENTAJE_SERGIO * 100)}%)`, totalASergio],
+    [],
+    headers,
+    ...dataRows,
+  ];
+
+  const ws = XLSX.utils.aoa_to_sheet(summary);
+  ws['!cols'] = [{ wch: 22 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 22 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Registro');
   XLSX.writeFile(wb, `registro-pagos-${new Date().toISOString().slice(0, 10)}.xlsx`);
