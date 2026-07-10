@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Registro de sesiones y pagos</title>
+<link rel="stylesheet" href="styles.css" />
+<script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="config.js"></script>
+</head>
+<body>
+
+  <header style="background:var(--sage-deep); padding:24px 20px;">
+    <div style="max-width:1100px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+      <div>
+        <h1 class="serif" style="color:#F5F3EA; font-size:26px; margin:0;">Registro de sesiones y pagos</h1>
+        <p style="color:#C9D2C7; font-size:13px; margin:4px 0 0;" id="userLabel">Libro compartido del equipo</p>
+      </div>
+      <div style="display:flex; gap:8px;">
+        <button class="btn-header-ghost" id="refreshBtn">Actualizar</button>
+        <button class="btn-header" id="newBtn">+ Nueva sesión</button>
+        <button class="btn-header-ghost" id="logoutBtn">Cerrar sesión</button>
+      </div>
+    </div>
+  </header>
+
+  <main style="max-width:1100px; margin:0 auto; padding:24px 20px;">
+
+    <div id="stats" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:24px;"></div>
+
+    <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; align-items:center;">
+      <input id="searchInput" placeholder="Buscar paciente, responsable o psicóloga…" style="flex:1; min-width:220px;" />
+      <select id="estadoFilter"></select>
+      <select id="monthFilter"></select>
+      <button class="btn-secondary" id="exportBtn">Exportar Excel</button>
+    </div>
+
+    <div id="tableContainer"></div>
+
+    <p style="font-size:12px; color:var(--ink-soft); margin-top:16px;">
+      Los datos se guardan en la base de datos compartida del equipo (Supabase) y se sincronizan automáticamente entre las 3 personas conectadas.
+    </p>
+  </main>
+
+  <div id="modalRoot"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
