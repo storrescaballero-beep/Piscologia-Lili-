@@ -9,7 +9,7 @@
 <link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png" />
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
 <link rel="manifest" href="manifest.json" />
-<meta name="theme-color" content="#2E4033" />
+<meta name="theme-color" content="#17356F" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="apple-mobile-web-app-title" content="Sesiones" />
@@ -30,19 +30,23 @@
 </head>
 <body>
 
-  <header style="background:var(--sage-deep); padding:24px 20px;">
+  <header style="background:#FFFFFF; padding:16px 20px;">
     <div style="max-width:1100px; margin:0 auto; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
-      <div>
-        <h1 class="serif" style="color:#F5F3EA; font-size:26px; margin:0;">Registro de sesiones y pagos</h1>
-        <p style="color:#C9D2C7; font-size:13px; margin:4px 0 0;" id="userLabel">Libro compartido del equipo</p>
+      <div style="display:flex; align-items:center; gap:14px;">
+        <img src="assets/logo.png" alt="Isabel Pérez Fraile · Psicóloga sanitaria" class="logo-header" />
+        <div style="border-left:1px solid var(--line); padding-left:14px;">
+          <h1 class="serif" style="color:var(--sage-deep); font-size:19px; margin:0;">Registro de sesiones y pagos</h1>
+          <p style="color:var(--ink-soft); font-size:12px; margin:2px 0 0;" id="userLabel">Libro compartido del equipo</p>
+        </div>
       </div>
       <div style="display:flex; gap:8px;">
-        <button class="btn-header-ghost" id="refreshBtn">Actualizar</button>
-        <button class="btn-header" id="newBtn">+ Nueva sesión</button>
-        <button class="btn-header-ghost" id="logoutBtn">Cerrar sesión</button>
+        <button class="btn-header-ghost" id="refreshBtn" style="border-color:var(--line); color:var(--sage-deep);">Actualizar</button>
+        <button class="btn-header" id="newBtn" style="background:var(--sage-deep); color:#fff;">+ Nueva sesión</button>
+        <button class="btn-header-ghost" id="logoutBtn" style="border-color:var(--line); color:var(--sage-deep);">Cerrar sesión</button>
       </div>
     </div>
   </header>
+  <div class="brand-gradient"></div>
 
   <main style="max-width:1100px; margin:0 auto; padding:24px 20px;">
 
