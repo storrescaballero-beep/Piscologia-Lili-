@@ -1,4 +1,4 @@
-const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
 const FORMAS_PAGO = ['Efectivo', 'Tarjeta', 'Transferencia', 'Bizum'];
 const ESTADOS = ['Pendiente', 'Pagado', 'Parcial'];
@@ -27,7 +27,7 @@ let modalOpen = false;
 
 // ---------- Auth guard ----------
 async function initAuth() {
-  const { data } = await supabase.auth.getSession();
+  const { data } = await sb.auth.getSession();
   if (!data.session) {
     window.location.href = 'login.html';
     return null;
@@ -37,7 +37,7 @@ async function initAuth() {
 }
 
 document.getElementById('logoutBtn').addEventListener('click', async () => {
-  await supabase.auth.signOut();
+  await sb.auth.signOut();
   window.location.href = 'login.html';
 });
 
@@ -61,7 +61,7 @@ function esc(s) {
 
 // ---------- Data loading ----------
 async function loadSessions() {
-  const { data, error } = await supabase.from('sesiones').select('*').order('fecha_sesion', { ascending: false });
+  const { data, error } = await sb.from('sesiones').select('*').order('fecha_sesion', { ascending: false });
   if (error) {
     console.error(error);
     alert('Error cargando el registro: ' + error.message);
@@ -75,7 +75,7 @@ document.getElementById('refreshBtn').addEventListener('click', loadSessions);
 
 // Realtime: refresca automáticamente si otra persona del equipo cambia algo
 function subscribeRealtime() {
-  supabase
+  sb
     .channel('sesiones-changes')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'sesiones' }, () => loadSessions())
     .subscribe();
@@ -107,9 +107,9 @@ async function saveForm(e) {
 
   let error;
   if (form.id) {
-    ({ error } = await supabase.from('sesiones').update(payload).eq('id', form.id));
+    ({ error } = await sb.from('sesiones').update(payload).eq('id', form.id));
   } else {
-    ({ error } = await supabase.from('sesiones').insert(payload));
+    ({ error } = await sb.from('sesiones').insert(payload));
   }
 
   if (error) {
@@ -125,13 +125,13 @@ async function saveForm(e) {
 
 async function deleteSession(id) {
   if (!confirm('¿Eliminar esta sesión del registro?')) return;
-  const { error } = await supabase.from('sesiones').delete().eq('id', id);
+  const { error } = await sb.from('sesiones').delete().eq('id', id);
   if (error) { alert('Error eliminando: ' + error.message); return; }
   loadSessions();
 }
 
 async function toggleQuipu(s) {
-  const { error } = await supabase.from('sesiones').update({ quipu: !s.quipu }).eq('id', s.id);
+  const { error } = await sb.from('sesiones').update({ quipu: !s.quipu }).eq('id', s.id);
   if (error) { alert('Error actualizando: ' + error.message); return; }
   loadSessions();
 }

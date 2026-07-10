@@ -38,10 +38,10 @@
   </div>
 
   <script>
-    const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+    const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
 
     // Si ya hay sesión activa, ir directo al registro
-    supabase.auth.getSession().then(({ data }) => {
+    sb.auth.getSession().then(({ data }) => {
       if (data.session) window.location.href = 'index.html';
     });
 
@@ -58,7 +58,7 @@
       const email = document.getElementById('email').value.trim();
       const password = document.getElementById('password').value;
 
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      const { error } = await sb.auth.signInWithPassword({ email, password });
 
       if (error) {
         errorEl.textContent = 'Email o contraseña incorrectos.';
