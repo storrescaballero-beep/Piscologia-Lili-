@@ -3,14 +3,52 @@ const sb = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANO
 const FORMAS_PAGO = ['Efectivo', 'Tarjeta', 'Transferencia', 'Bizum'];
 const ESTADOS = ['Pendiente', 'Pagado', 'Parcial'];
 const MODALIDADES = ['Presencial', 'Online'];
-const ISABEL_EMAIL = 'iperezfraile@gmail.com';
+const PSICOLOGAS = ['Isabel', 'Raquel', 'Te quiero mucho'];
+const PRECIOS_SERVICIO = { individual: 65, pareja: 70 };
+
+const ISABEL_EMAIL = 'iperezfraile@gmail.com'; // Directora: ve todo, se lleva el 40% restante
 const DAVID_CENTRO = 'Centro David';
-const DAVID_ALQUILER = 30;
-const PORCENTAJE_SERGIO = 0.6;
+const DAVID_ALQUILER = 10;     // € fijos por sesión presencial en el centro de David
+const DAVID_IRPF = 0.15;       // retención a David
+const PSICOLOGA_PCT = 0.60;    // parte de la psicóloga sobre el importe ya sin el alquiler de David
+const DIRECTORA_PCT = 0.40;    // parte de Isabel (directora) sobre ese mismo importe
+const PSICOLOGA_IRPF = 0.07;   // retención a las psicólogas
+
 let currentUserEmail = '';
 
 function alquilerDavid(s) {
   return (s.centro === DAVID_CENTRO && s.modalidad === 'Presencial') ? DAVID_ALQUILER : 0;
+}
+
+// Desglose económico completo de una sesión
+function sessionFinance(s) {
+  const precio = parseFloat(s.precio) || 0;
+  const alquiler = alquilerDavid(s);
+  const irpfDavid = alquiler * DAVID_IRPF;
+  const netoDavid = alquiler - irpfDavid;
+
+  const base = precio - alquiler; // lo que queda tras descontar el alquiler a David
+  const brutoPsicologa = base * PSICOLOGA_PCT;
+  const brutoDirectora = base * DIRECTORA_PCT;
+  const irpfPsicologa = brutoPsicologa * PSICOLOGA_IRPF;
+  const netoPsicologa = brutoPsicologa - irpfPsicologa;
+
+  return { precio, alquiler, irpfDavid, netoDavid, base, brutoPsicologa, brutoDirectora, irpfPsicologa, netoPsicologa };
+}
+
+function sumFinance(list) {
+  return list.reduce((acc, s) => {
+    const f = sessionFinance(s);
+    acc.facturado += f.precio;
+    acc.alquiler += f.alquiler;
+    acc.irpfDavid += f.irpfDavid;
+    acc.netoDavid += f.netoDavid;
+    acc.brutoPsicologa += f.brutoPsicologa;
+    acc.irpfPsicologa += f.irpfPsicologa;
+    acc.netoPsicologa += f.netoPsicologa;
+    acc.brutoDirectora += f.brutoDirectora;
+    return acc;
+  }, { facturado: 0, alquiler: 0, irpfDavid: 0, netoDavid: 0, brutoPsicologa: 0, irpfPsicologa: 0, netoPsicologa: 0, brutoDirectora: 0 });
 }
 
 const EMPTY_FORM = {
@@ -181,10 +219,8 @@ function getStats() {
   const cobrado = thisMonth.filter((s) => s.estado_pago === 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const pendiente = thisMonth.filter((s) => s.estado_pago !== 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const sinQuipu = sessions.filter((s) => s.estado_pago === 'Pagado' && !s.quipu).length;
-  const facturado = thisMonth.reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
-  const alquiler = thisMonth.reduce((a, s) => a + alquilerDavid(s), 0);
-  const aSergio = facturado * PORCENTAJE_SERGIO;
-  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel, facturado, alquiler, aSergio };
+  const f = sumFinance(thisMonth);
+  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel, ...f };
 }
 
 // ---------- Rendering ----------
@@ -202,8 +238,6 @@ function renderStats() {
     { label: 'Cobrado', value: eur(s.cobrado), sub: 'este mes', color: 'var(--sage)' },
     { label: 'Pendiente', value: eur(s.pendiente), sub: 'por cobrar este mes', color: 'var(--ochre)' },
     { label: 'Sin Quipu', value: String(s.sinQuipu), sub: 'pagos sin contabilizar', color: 'var(--stamp-red)' },
-    { label: 'Alquiler David', value: eur(s.alquiler), sub: 'centro presencial, este mes', color: 'var(--blue)' },
-    { label: `A facturar a Sergio (${Math.round(PORCENTAJE_SERGIO * 100)}%)`, value: eur(s.aSergio), sub: 'sobre el total facturado', color: 'var(--sage-deep)' },
   ];
   document.getElementById('stats').innerHTML = cards.map((c) => `
     <div class="stat-card" style="border-left-color:${c.color};">
@@ -212,6 +246,48 @@ function renderStats() {
       <p style="font-size:12px; color:var(--ink-soft); margin:2px 0 0;">${c.sub}</p>
     </div>
   `).join('');
+
+  renderLiquidacion(s);
+}
+
+function liquidRow(label, value, opts = {}) {
+  const strong = opts.strong ? 'font-weight:600;' : '';
+  const color = opts.color ? `color:${opts.color};` : '';
+  return `
+    <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); ${strong}">
+      <span style="font-size:13px; ${opts.sub ? 'color:var(--ink-soft); padding-left:14px;' : ''}">${label}</span>
+      <span class="mono" style="font-size:13px; ${color} ${strong}">${eur(value)}</span>
+    </div>`;
+}
+
+function renderLiquidacion(s) {
+  const isabelView = currentUserEmail === ISABEL_EMAIL;
+  const el = document.getElementById('liquidacion');
+  if (!el) return;
+
+  let html = `<h3 class="serif" style="font-size:17px; color:var(--sage-deep); margin:0 0 10px;">Liquidación · ${s.label}</h3>`;
+
+  html += liquidRow('Facturado (bruto)', s.facturado, { strong: true });
+  if (s.alquiler > 0) html += liquidRow('Alquiler a David descontado', -s.alquiler, { sub: true });
+  html += liquidRow(`Tu parte bruta (${Math.round(PSICOLOGA_PCT * 100)}%)`, s.brutoPsicologa);
+  html += liquidRow(`IRPF retenido (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -s.irpfPsicologa, { sub: true });
+  html += liquidRow('Neto a cobrar', s.netoPsicologa, { strong: true, color: 'var(--sage)' });
+
+  if (isabelView) {
+    html += `<div style="margin-top:16px; padding-top:10px; border-top:2px solid var(--sage-deep);">
+      <p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 6px;">Como directora — vista completa del equipo</p>
+    </div>`;
+    html += liquidRow('Alquiler a David (bruto)', s.alquiler);
+    html += liquidRow(`IRPF David (${Math.round(DAVID_IRPF * 100)}%)`, -s.irpfDavid, { sub: true });
+    html += liquidRow('Neto a pagar a David', s.netoDavid, { sub: true });
+    html += liquidRow('Bruto psicólogas (equipo)', s.brutoPsicologa);
+    html += liquidRow(`IRPF psicólogas (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -s.irpfPsicologa, { sub: true });
+    html += liquidRow('Neto a pagar a psicólogas', s.netoPsicologa, { sub: true });
+    html += liquidRow(`Tu parte como directora (${Math.round(DIRECTORA_PCT * 100)}%)`, s.brutoDirectora, { strong: true, color: 'var(--sage-deep)' });
+    html += liquidRow('Total IRPF a pagar a Hacienda', s.irpfDavid + s.irpfPsicologa, { strong: true, color: 'var(--stamp-red)' });
+  }
+
+  el.innerHTML = html;
 }
 
 function renderFilters() {
@@ -340,10 +416,10 @@ function renderModal() {
           ${fieldHtml('Fecha sesión', `<input type="date" name="fecha_sesion" required value="${esc(form.fecha_sesion)}" />`)}
           ${fieldHtml('Nombre paciente', `<input name="paciente" list="dl_pacientes" required value="${esc(form.paciente)}" />${dl('dl_pacientes', o.pacientes)}`)}
           ${fieldHtml('Responsable de pago', `<input name="responsable_pago" value="${esc(form.responsable_pago)}" />`)}
-          ${fieldHtml('Psicóloga', `<input name="psicologa" list="dl_psicologas" value="${esc(form.psicologa)}" />${dl('dl_psicologas', o.psicologas)}`)}
+          ${fieldHtml('Psicóloga', `<input name="psicologa" list="dl_psicologas" value="${esc(form.psicologa)}" />${dl('dl_psicologas', [...new Set([...PSICOLOGAS, ...o.psicologas])])}`)}
           ${fieldHtml('Centro', `<input name="centro" list="dl_centros" value="${esc(form.centro)}" />${dl('dl_centros', [...new Set([DAVID_CENTRO, 'Online', ...o.centros])])}`)}
           ${fieldHtml('Modalidad', `<select name="modalidad"><option value="">—</option>${MODALIDADES.map((m) => `<option ${m === form.modalidad ? 'selected' : ''}>${m}</option>`).join('')}</select>`)}
-          ${fieldHtml('Tipo de servicio', `<input name="tipo_servicio" list="dl_tipos" value="${esc(form.tipo_servicio)}" />${dl('dl_tipos', o.tipos)}`)}
+          ${fieldHtml('Tipo de servicio', `<input name="tipo_servicio" list="dl_tipos" value="${esc(form.tipo_servicio)}" placeholder="Individual / Pareja / otro" />${dl('dl_tipos', [...new Set(['Individual', 'Pareja', ...o.tipos])])}<span style="font-size:11px; color:var(--ink-soft); display:block; margin-top:2px;">Individual 65€ · Pareja 70€ (autocompleta el precio)</span>`)}
           ${fieldHtml('Precio (€)', `<input type="number" step="0.01" min="0" name="precio" value="${esc(form.precio)}" />`)}
           ${fieldHtml('Forma de pago', `<select name="forma_pago"><option value="">—</option>${FORMAS_PAGO.map((f) => `<option ${f === form.forma_pago ? 'selected' : ''}>${f}</option>`).join('')}</select>`)}
           ${fieldHtml('Fecha ingreso banco', `<input type="date" name="fecha_ingreso_banco" value="${esc(form.fecha_ingreso_banco || '')}" />`)}
@@ -368,6 +444,10 @@ function renderModal() {
 
   formEl.paciente.addEventListener('blur', () => {
     if (!formEl.responsable_pago.value) formEl.responsable_pago.value = formEl.paciente.value;
+  });
+  formEl.tipo_servicio.addEventListener('blur', () => {
+    const key = formEl.tipo_servicio.value.trim().toLowerCase();
+    if (PRECIOS_SERVICIO[key] != null) formEl.precio.value = PRECIOS_SERVICIO[key];
   });
   formEl.fecha_ingreso_banco.addEventListener('change', () => {
     if (formEl.fecha_ingreso_banco.value && formEl.estado_pago.value === 'Pendiente') {
@@ -403,29 +483,37 @@ function renderModal() {
 // ---------- Excel export ----------
 function exportExcel() {
   const filtered = getFiltered();
-  const totalFacturado = filtered.reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
-  const totalAlquilerDavid = filtered.reduce((a, s) => a + alquilerDavid(s), 0);
-  const totalASergio = totalFacturado * PORCENTAJE_SERGIO;
+  const f = sumFinance(filtered);
+  const isabelView = currentUserEmail === ISABEL_EMAIL;
 
-  const headers = ['Fecha sesión', 'Paciente', 'Responsable pago', 'Psicóloga', 'Centro', 'Modalidad', 'Tipo servicio', 'Precio', 'Alquiler David', 'Forma de pago', 'Fecha ingreso banco', 'Estado pago', 'Contabilizado Quipu', 'Introducido por'];
-  const dataRows = filtered.map((s) => [
-    s.fecha_sesion, s.paciente, s.responsable_pago, s.psicologa, s.centro, s.modalidad, s.tipo_servicio,
-    parseFloat(s.precio) || 0, alquilerDavid(s), s.forma_pago, s.fecha_ingreso_banco || '', s.estado_pago,
-    s.quipu ? 'Sí' : 'No', s.creado_por || '',
-  ]);
+  const headers = ['Fecha sesión', 'Paciente', 'Responsable pago', 'Psicóloga', 'Centro', 'Modalidad', 'Tipo servicio', 'Precio', 'Alquiler David', 'Bruto psicóloga (60%)', 'IRPF psicóloga (7%)', 'Neto psicóloga', 'Forma de pago', 'Fecha ingreso banco', 'Estado pago', 'Contabilizado Quipu', 'Introducido por'];
+  const dataRows = filtered.map((s) => {
+    const sf = sessionFinance(s);
+    return [
+      s.fecha_sesion, s.paciente, s.responsable_pago, s.psicologa, s.centro, s.modalidad, s.tipo_servicio,
+      sf.precio, sf.alquiler, sf.brutoPsicologa, sf.irpfPsicologa, sf.netoPsicologa,
+      s.forma_pago, s.fecha_ingreso_banco || '', s.estado_pago, s.quipu ? 'Sí' : 'No', s.creado_por || '',
+    ];
+  });
 
   const summary = [
     ['Resumen', ''],
-    ['Total facturado', totalFacturado],
-    ['Alquiler a David (centro presencial)', totalAlquilerDavid],
-    [`A facturar a Sergio (${Math.round(PORCENTAJE_SERGIO * 100)}%)`, totalASergio],
-    [],
-    headers,
-    ...dataRows,
+    ['Total facturado (bruto)', f.facturado],
+    ['Alquiler a David (bruto)', f.alquiler],
+    [`IRPF David (${Math.round(DAVID_IRPF * 100)}%)`, -f.irpfDavid],
+    ['Neto a pagar a David', f.netoDavid],
+    [`Bruto psicólogas (${Math.round(PSICOLOGA_PCT * 100)}%)`, f.brutoPsicologa],
+    [`IRPF psicólogas (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -f.irpfPsicologa],
+    ['Neto a cobrar psicólogas', f.netoPsicologa],
   ];
+  if (isabelView) {
+    summary.push([`Parte directora (${Math.round(DIRECTORA_PCT * 100)}%)`, f.brutoDirectora]);
+    summary.push(['Total IRPF a pagar a Hacienda', f.irpfDavid + f.irpfPsicologa]);
+  }
+  summary.push([], headers, ...dataRows);
 
   const ws = XLSX.utils.aoa_to_sheet(summary);
-  ws['!cols'] = [{ wch: 22 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 18 }, { wch: 10 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 22 }];
+  ws['!cols'] = [{ wch: 22 }, { wch: 20 }, { wch: 20 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 22 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Registro');
   XLSX.writeFile(wb, `registro-pagos-${new Date().toISOString().slice(0, 10)}.xlsx`);
