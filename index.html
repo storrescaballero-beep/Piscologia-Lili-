@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Registro de sesiones y pagos</title>
 <link rel="stylesheet" href="styles.css" />
+<script>
+  // Limpieza defensiva: elimina cualquier service worker o caché antigua
+  // que pudiera estar sirviendo una versión vieja de los scripts.
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister()));
+  }
+  if (window.caches) {
+    caches.keys().then((keys) => keys.forEach((k) => caches.delete(k)));
+  }
+</script>
 <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
 <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="config.js"></script>
@@ -45,6 +55,6 @@
 
   <div id="modalRoot"></div>
 
-  <script src="app.js"></script>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
