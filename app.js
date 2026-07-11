@@ -69,6 +69,7 @@ const EMPTY_FORM = {
 
 let sessions = [];
 let search = '';
+let searchScope = 'todos';
 let estadoFilter = 'Todos';
 let monthFilter = 'Todos';
 let form = { ...EMPTY_FORM };
@@ -202,7 +203,9 @@ function getFiltered() {
   return sessions.filter((s) => {
     if (search) {
       const q = search.toLowerCase();
-      const hay = `${s.paciente} ${s.responsable_pago} ${s.psicologa}`.toLowerCase();
+      const hay = searchScope === 'todos'
+        ? `${s.paciente} ${s.responsable_pago} ${s.psicologa}`.toLowerCase()
+        : String(s[searchScope] || '').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     if (estadoFilter !== 'Todos' && s.estado_pago !== estadoFilter) return false;
@@ -317,7 +320,7 @@ function renderTable() {
   });
 
   const estadoStyles = {
-    Pagado: 'color:var(--sage); background:#EAF0EA; border-color:var(--sage);',
+    Pagado: 'color:var(--sage); background:#E3F3F0; border-color:var(--sage);',
     Pendiente: 'color:var(--ochre); background:var(--ochre-bg); border-color:var(--ochre);',
     Parcial: 'color:var(--blue); background:#E7ECF1; border-color:var(--blue);',
   };
@@ -414,7 +417,7 @@ function renderModal() {
         </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
           ${fieldHtml('Fecha sesión', `<input type="date" name="fecha_sesion" required value="${esc(form.fecha_sesion)}" />`)}
-          ${fieldHtml('Nombre paciente', `<input name="paciente" list="dl_pacientes" required value="${esc(form.paciente)}" />${dl('dl_pacientes', o.pacientes)}`)}
+          ${fieldHtml('Nombre paciente', `<input name="paciente" list="dl_pacientes" required placeholder="Nombre y apellidos" value="${esc(form.paciente)}" />${dl('dl_pacientes', o.pacientes)}<span style="font-size:11px; color:var(--ink-soft); display:block; margin-top:2px;">Usa nombre y apellidos para no confundir a pacientes con el mismo nombre de pila</span>`)}
           ${fieldHtml('Responsable de pago', `<input name="responsable_pago" value="${esc(form.responsable_pago)}" />`)}
           ${fieldHtml('Psicóloga', `<input name="psicologa" list="dl_psicologas" value="${esc(form.psicologa)}" />${dl('dl_psicologas', [...new Set([...PSICOLOGAS, ...o.psicologas])])}`)}
           ${fieldHtml('Centro', `<input name="centro" list="dl_centros" value="${esc(form.centro)}" />${dl('dl_centros', [...new Set([DAVID_CENTRO, 'Online', ...o.centros])])}`)}
@@ -521,6 +524,7 @@ function exportExcel() {
 
 // ---------- Event bindings ----------
 document.getElementById('searchInput').addEventListener('input', (e) => { search = e.target.value; renderTable(); });
+document.getElementById('searchScope').addEventListener('change', (e) => { searchScope = e.target.value; renderTable(); });
 document.getElementById('estadoFilter').addEventListener('change', (e) => { estadoFilter = e.target.value; renderTable(); });
 document.getElementById('monthFilter').addEventListener('change', (e) => { monthFilter = e.target.value; renderTable(); });
 document.getElementById('newBtn').addEventListener('click', () => openModal(null));

@@ -55,7 +55,13 @@
     <div id="liquidacion" class="card" style="padding:16px 18px; margin-bottom:24px;"></div>
 
     <div style="display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; align-items:center;">
-      <input id="searchInput" placeholder="Buscar paciente, responsable o psicóloga…" style="flex:1; min-width:220px;" />
+      <input id="searchInput" placeholder="Buscar…" style="flex:1; min-width:180px;" />
+      <select id="searchScope" style="min-width:150px;">
+        <option value="todos">Buscar en: Todos</option>
+        <option value="paciente">Solo Paciente</option>
+        <option value="psicologa">Solo Psicóloga</option>
+        <option value="responsable_pago">Solo Responsable pago</option>
+      </select>
       <select id="estadoFilter"></select>
       <select id="monthFilter"></select>
       <button class="btn-secondary" id="exportBtn">Exportar Excel</button>
