@@ -223,7 +223,18 @@ function getStats() {
   const pendiente = thisMonth.filter((s) => s.estado_pago !== 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const sinQuipu = sessions.filter((s) => s.estado_pago === 'Pagado' && !s.quipu).length;
   const f = sumFinance(thisMonth);
-  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel, ...f };
+  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel, thisMonthSessions: thisMonth, ...f };
+}
+
+function getPsicologaBreakdown(list) {
+  const map = {};
+  list.forEach((s) => {
+    const key = (s.psicologa || '').trim() || 'Sin asignar';
+    (map[key] = map[key] || []).push(s);
+  });
+  return Object.entries(map)
+    .map(([name, rows]) => ({ name, count: rows.length, ...sumFinance(rows) }))
+    .sort((a, b) => b.brutoPsicologa - a.brutoPsicologa);
 }
 
 // ---------- Rendering ----------
@@ -263,6 +274,20 @@ function liquidRow(label, value, opts = {}) {
     </div>`;
 }
 
+function splitBar(segments) {
+  // segments: [{label, value, color}]
+  const total = segments.reduce((a, s) => a + Math.max(s.value, 0), 0) || 1;
+  const bar = segments.map((s) => `<div style="width:${(Math.max(s.value, 0) / total * 100).toFixed(2)}%; background:${s.color};" title="${s.label}: ${eur(s.value)}"></div>`).join('');
+  const legend = segments.map((s) => `
+    <div style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-soft);">
+      <span style="width:10px; height:10px; border-radius:2px; background:${s.color}; display:inline-block;"></span>
+      ${s.label} <span class="mono" style="color:var(--ink);">${eur(s.value)}</span>
+    </div>`).join('');
+  return `
+    <div style="display:flex; height:14px; border-radius:4px; overflow:hidden; border:1px solid var(--line);">${bar}</div>
+    <div style="display:flex; flex-wrap:wrap; gap:14px; margin-top:8px;">${legend}</div>`;
+}
+
 function renderLiquidacion(s) {
   const isabelView = currentUserEmail === ISABEL_EMAIL;
   const el = document.getElementById('liquidacion');
@@ -270,24 +295,51 @@ function renderLiquidacion(s) {
 
   let html = `<h3 class="serif" style="font-size:17px; color:var(--sage-deep); margin:0 0 10px;">Liquidación · ${s.label}</h3>`;
 
-  html += liquidRow('Facturado (bruto)', s.facturado, { strong: true });
-  if (s.alquiler > 0) html += liquidRow('Alquiler a David descontado', -s.alquiler, { sub: true });
-  html += liquidRow(`Tu parte bruta (${Math.round(PSICOLOGA_PCT * 100)}%)`, s.brutoPsicologa);
-  html += liquidRow(`IRPF retenido (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -s.irpfPsicologa, { sub: true });
-  html += liquidRow('Neto a cobrar', s.netoPsicologa, { strong: true, color: 'var(--sage)' });
-
   if (isabelView) {
-    html += `<div style="margin-top:16px; padding-top:10px; border-top:2px solid var(--sage-deep);">
-      <p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 6px;">Como directora — vista completa del equipo</p>
+    // Cifra destacada: lo que Isabel gana de verdad este mes, ya descontado todo
+    html += `
+      <div style="background:var(--sage-deep); border-radius:8px; padding:16px 18px; margin-bottom:16px; color:#fff;">
+        <p class="mono" style="font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin:0; opacity:.8;">Tu neto real este mes — ya descontado David y todas las psicólogas</p>
+        <p class="serif" style="font-size:32px; margin:6px 0 0;">${eur(s.brutoDirectora)}</p>
+      </div>`;
+
+    html += splitBar([
+      { label: 'David (alquiler)', value: s.alquiler, color: 'var(--blue)' },
+      { label: 'Psicólogas (bruto)', value: s.brutoPsicologa, color: 'var(--ochre)' },
+      { label: 'Tú (directora)', value: s.brutoDirectora, color: 'var(--sage-deep)' },
+    ]);
+    html += `<p style="font-size:11px; color:var(--ink-soft); margin:8px 0 18px;">Reparto del total facturado (${eur(s.facturado)}) este mes</p>`;
+
+    html += `<p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 8px;">Pago a cada psicóloga</p>`;
+    const breakdown = getPsicologaBreakdown(s.thisMonthSessions);
+    if (breakdown.length === 0) {
+      html += `<p style="font-size:13px; color:var(--ink-soft);">Sin sesiones este mes.</p>`;
+    } else {
+      html += breakdown.map((p) => `
+        <div style="border:1px solid var(--line); border-radius:6px; padding:10px 14px; margin-bottom:8px;">
+          <div style="display:flex; justify-content:space-between; align-items:baseline;">
+            <span style="font-weight:600; font-size:14px;">${esc(p.name)}</span>
+            <span style="font-size:11px; color:var(--ink-soft);">${p.count} sesiones</span>
+          </div>
+          ${liquidRow('Bruto (60%)', p.brutoPsicologa, { sub: true })}
+          ${liquidRow(`IRPF (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -p.irpfPsicologa, { sub: true })}
+          ${liquidRow('Neto a pagarle', p.netoPsicologa, { strong: true, color: 'var(--sage)' })}
+        </div>`).join('');
+    }
+
+    html += `<div style="margin-top:14px; padding-top:10px; border-top:2px solid var(--sage-deep);">
+      <p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 6px;">Alquiler e impuestos</p>
     </div>`;
-    html += liquidRow('Alquiler a David (bruto)', s.alquiler);
+    html += liquidRow('Alquiler a David (bruto)', s.alquiler, { sub: true });
     html += liquidRow(`IRPF David (${Math.round(DAVID_IRPF * 100)}%)`, -s.irpfDavid, { sub: true });
     html += liquidRow('Neto a pagar a David', s.netoDavid, { sub: true });
-    html += liquidRow('Bruto psicólogas (equipo)', s.brutoPsicologa);
-    html += liquidRow(`IRPF psicólogas (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -s.irpfPsicologa, { sub: true });
-    html += liquidRow('Neto a pagar a psicólogas', s.netoPsicologa, { sub: true });
-    html += liquidRow(`Tu parte como directora (${Math.round(DIRECTORA_PCT * 100)}%)`, s.brutoDirectora, { strong: true, color: 'var(--sage-deep)' });
     html += liquidRow('Total IRPF a pagar a Hacienda', s.irpfDavid + s.irpfPsicologa, { strong: true, color: 'var(--stamp-red)' });
+  } else {
+    html += liquidRow('Facturado (bruto)', s.facturado, { strong: true });
+    if (s.alquiler > 0) html += liquidRow('Alquiler a David descontado', -s.alquiler, { sub: true });
+    html += liquidRow(`Tu parte bruta (${Math.round(PSICOLOGA_PCT * 100)}%)`, s.brutoPsicologa);
+    html += liquidRow(`IRPF retenido (${Math.round(PSICOLOGA_IRPF * 100)}%)`, -s.irpfPsicologa, { sub: true });
+    html += liquidRow('Neto a cobrar', s.netoPsicologa, { strong: true, color: 'var(--sage)' });
   }
 
   el.innerHTML = html;
