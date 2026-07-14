@@ -873,7 +873,13 @@ async function analizarRecibo(file) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ imageBase64: base64, mediaType: file.type || 'image/jpeg' }),
   });
-  const data = await res.json();
+  const raw = await res.text();
+  let data;
+  try {
+    data = JSON.parse(raw);
+  } catch (e) {
+    throw new Error(`Respuesta inesperada del servidor (${res.status}): ${raw.slice(0, 200)}`);
+  }
   if (!res.ok) throw new Error(data.error || 'Error analizando el recibo');
   return data;
 }
