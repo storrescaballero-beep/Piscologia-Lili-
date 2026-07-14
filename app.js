@@ -974,12 +974,13 @@ function renderGastosModal() {
           <button type="button" id="gastosCloseBtn" style="background:none; font-size:18px;">✕</button>
         </div>
 
-        <div style="margin-bottom:14px;">
+        <div style="margin-bottom:14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
           <label class="btn-primary" style="display:inline-block; cursor:pointer;">
             📷 Foto o subir ticket/factura
             <input type="file" id="gastoFileInput" accept="image/*" capture="environment" style="display:none;" />
           </label>
-          <span id="gastoAnalizandoMsg" style="font-size:13px; color:var(--ink-soft); margin-left:10px;"></span>
+          <button id="gastoManualBtn" class="btn-secondary">+ Añadir manualmente</button>
+          <span id="gastoAnalizandoMsg" style="font-size:13px; color:var(--ink-soft);"></span>
         </div>
 
         ${formHtml}
@@ -1011,6 +1012,19 @@ function renderGastosModal() {
 
   document.getElementById('gastosCloseBtn').addEventListener('click', closeGastosModal);
   document.getElementById('gastosOverlay').addEventListener('click', (e) => { if (e.target.id === 'gastosOverlay') closeGastosModal(); });
+
+  document.getElementById('gastoManualBtn').addEventListener('click', () => {
+    gastoImagenFile = null;
+    gastoDraft = {
+      fecha_gasto: new Date().toISOString().slice(0, 10),
+      proveedor: '',
+      concepto: '',
+      importe: '',
+      iva: '',
+      categoria: 'Otros',
+    };
+    renderGastosModal();
+  });
 
   document.getElementById('gastoFileInput').addEventListener('change', async (e) => {
     const file = e.target.files[0];
