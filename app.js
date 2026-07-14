@@ -86,6 +86,7 @@ async function initAuth() {
   currentUserEmail = (data.session.user.email || '').toLowerCase();
   if (currentUserEmail === ISABEL_EMAIL) {
     document.getElementById('fiscalBtn').style.display = 'inline-block';
+    document.getElementById('gastosBtn').style.display = 'inline-block';
   }
   return data.session;
 }
@@ -838,6 +839,239 @@ async function generarModelo190PDF(year) {
 document.getElementById('fiscalBtn').addEventListener('click', async () => {
   await loadFiscalDatos();
   openFiscalModal();
+});
+
+// ---------- Gastos (solo Isabel) ----------
+let gastos = [];
+let gastoDraft = null; // datos extraídos pendientes de confirmar
+let gastoImagenFile = null;
+
+async function loadGastos() {
+  try {
+    const { data, error } = await sb.from('gastos').select('*').order('fecha_gasto', { ascending: false });
+    if (error) throw error;
+    gastos = data || [];
+  } catch (e) {
+    console.error('Error cargando gastos', e);
+    gastos = [];
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function analizarRecibo(file) {
+  const base64 = await fileToBase64(file);
+  const res = await fetch('/api/analizar-recibo', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ imageBase64: base64, mediaType: file.type || 'image/jpeg' }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'Error analizando el recibo');
+  return data;
+}
+
+async function guardarGasto() {
+  if (!gastoDraft) return;
+  const btn = document.getElementById('guardarGastoBtn');
+  btn.disabled = true;
+  btn.textContent = 'Guardando…';
+
+  let imagen_path = null;
+  try {
+    if (gastoImagenFile) {
+      const ext = (gastoImagenFile.name || 'jpg').split('.').pop();
+      const path = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error: upErr } = await sb.storage.from('recibos').upload(path, gastoImagenFile);
+      if (upErr) throw upErr;
+      imagen_path = path;
+    }
+
+    const payload = {
+      fecha_gasto: gastoDraft.fecha_gasto,
+      proveedor: gastoDraft.proveedor,
+      concepto: gastoDraft.concepto,
+      importe: parseFloat(gastoDraft.importe) || 0,
+      iva: gastoDraft.iva !== '' && gastoDraft.iva != null ? parseFloat(gastoDraft.iva) : null,
+      categoria: gastoDraft.categoria,
+      imagen_path,
+      creado_por: currentUserEmail,
+    };
+    const { error } = await sb.from('gastos').insert(payload);
+    if (error) throw error;
+
+    gastoDraft = null;
+    gastoImagenFile = null;
+    await loadGastos();
+    renderGastosModal();
+  } catch (e) {
+    alert('Error guardando el gasto: ' + e.message);
+  }
+  btn.disabled = false;
+}
+
+async function eliminarGasto(id) {
+  if (!confirm('¿Eliminar este gasto?')) return;
+  const { error } = await sb.from('gastos').delete().eq('id', id);
+  if (error) { alert('Error eliminando: ' + error.message); return; }
+  await loadGastos();
+  renderGastosModal();
+}
+
+function openGastosModal() {
+  gastoDraft = null;
+  gastoImagenFile = null;
+  renderGastosModal();
+}
+function closeGastosModal() {
+  document.getElementById('gastosModalRoot').innerHTML = '';
+}
+
+function renderGastosModal() {
+  const totalImporte = gastos.reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
+  const CATEGORIAS = ['Alquiler', 'Suministros', 'Material', 'Formación', 'Software', 'Otros'];
+
+  let formHtml = '';
+  if (gastoDraft) {
+    formHtml = `
+      <div style="border:2px solid var(--sage-deep); border-radius:6px; padding:14px; margin-bottom:16px;">
+        <p style="font-weight:600; margin:0 0 10px; color:var(--sage-deep);">Revisa los datos antes de guardar</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div class="field"><label>Fecha del gasto</label><input type="date" id="gd_fecha" value="${esc(gastoDraft.fecha_gasto || '')}" /></div>
+          <div class="field"><label>Proveedor</label><input id="gd_proveedor" value="${esc(gastoDraft.proveedor || '')}" /></div>
+          <div class="field"><label>Concepto</label><input id="gd_concepto" value="${esc(gastoDraft.concepto || '')}" /></div>
+          <div class="field"><label>Importe (€)</label><input type="number" step="0.01" id="gd_importe" value="${esc(gastoDraft.importe ?? '')}" /></div>
+          <div class="field"><label>IVA (€, opcional)</label><input type="number" step="0.01" id="gd_iva" value="${esc(gastoDraft.iva ?? '')}" /></div>
+          <div class="field"><label>Categoría</label>
+            <select id="gd_categoria">${CATEGORIAS.map((c) => `<option ${c === gastoDraft.categoria ? 'selected' : ''}>${c}</option>`).join('')}</select>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button id="guardarGastoBtn" class="btn-primary">Guardar gasto</button>
+          <button id="cancelarGastoBtn" class="btn-secondary">Cancelar</button>
+        </div>
+      </div>`;
+  }
+
+  document.getElementById('gastosModalRoot').innerHTML = `
+    <div class="modal-overlay" id="gastosOverlay">
+      <div class="modal" style="max-width:760px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3 class="serif" style="font-size:20px; color:var(--sage-deep); margin:0;">Gastos</h3>
+          <button type="button" id="gastosCloseBtn" style="background:none; font-size:18px;">✕</button>
+        </div>
+
+        <div style="margin-bottom:14px;">
+          <label class="btn-primary" style="display:inline-block; cursor:pointer;">
+            📷 Foto o subir ticket/factura
+            <input type="file" id="gastoFileInput" accept="image/*" capture="environment" style="display:none;" />
+          </label>
+          <span id="gastoAnalizandoMsg" style="font-size:13px; color:var(--ink-soft); margin-left:10px;"></span>
+        </div>
+
+        ${formHtml}
+
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <p class="mono" style="font-size:12px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0;">Gastos registrados</p>
+          <button id="exportGastosBtn" class="btn-secondary" style="padding:6px 12px; font-size:12px;">Exportar Excel</button>
+        </div>
+        <div class="card table-scroll">
+          <table>
+            <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>IVA</th><th>Categoría</th><th></th></tr></thead>
+            <tbody>
+              ${gastos.map((g) => `<tr>
+                <td class="mono" style="white-space:nowrap;">${g.fecha_gasto}</td>
+                <td>${esc(g.proveedor)}</td>
+                <td>${esc(g.concepto)}</td>
+                <td class="mono">${eur(g.importe)}</td>
+                <td class="mono">${g.iva != null ? eur(g.iva) : '—'}</td>
+                <td>${esc(g.categoria)}</td>
+                <td><button data-del-gasto="${g.id}" style="background:none; color:var(--stamp-red);">✕</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+        ${fiscalRow('Total gastos', eur(totalImporte))}
+      </div>
+    </div>
+  `;
+
+  document.getElementById('gastosCloseBtn').addEventListener('click', closeGastosModal);
+  document.getElementById('gastosOverlay').addEventListener('click', (e) => { if (e.target.id === 'gastosOverlay') closeGastosModal(); });
+
+  document.getElementById('gastoFileInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    gastoImagenFile = file;
+    const msg = document.getElementById('gastoAnalizandoMsg');
+    msg.textContent = 'Analizando con IA…';
+    try {
+      const extraido = await analizarRecibo(file);
+      gastoDraft = {
+        fecha_gasto: extraido.fecha_gasto || new Date().toISOString().slice(0, 10),
+        proveedor: extraido.proveedor || '',
+        concepto: extraido.concepto || '',
+        importe: extraido.importe ?? '',
+        iva: extraido.iva ?? '',
+        categoria: extraido.categoria || 'Otros',
+      };
+      renderGastosModal();
+    } catch (err) {
+      msg.textContent = '';
+      alert('Error analizando el recibo: ' + err.message);
+    }
+  });
+
+  if (gastoDraft) {
+    document.getElementById('guardarGastoBtn').addEventListener('click', () => {
+      gastoDraft.fecha_gasto = document.getElementById('gd_fecha').value;
+      gastoDraft.proveedor = document.getElementById('gd_proveedor').value;
+      gastoDraft.concepto = document.getElementById('gd_concepto').value;
+      gastoDraft.importe = document.getElementById('gd_importe').value;
+      gastoDraft.iva = document.getElementById('gd_iva').value;
+      gastoDraft.categoria = document.getElementById('gd_categoria').value;
+      guardarGasto();
+    });
+    document.getElementById('cancelarGastoBtn').addEventListener('click', () => {
+      gastoDraft = null;
+      gastoImagenFile = null;
+      renderGastosModal();
+    });
+  }
+
+  document.querySelectorAll('[data-del-gasto]').forEach((btn) => {
+    btn.addEventListener('click', () => eliminarGasto(btn.dataset.delGasto));
+  });
+
+  document.getElementById('exportGastosBtn').addEventListener('click', exportGastosExcel);
+}
+
+function exportGastosExcel() {
+  const rows = gastos.map((g) => ({
+    'Fecha': g.fecha_gasto,
+    'Proveedor': g.proveedor,
+    'Concepto': g.concepto,
+    'Importe': parseFloat(g.importe) || 0,
+    'IVA': g.iva != null ? parseFloat(g.iva) : '',
+    'Categoría': g.categoria,
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows);
+  ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 14 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Gastos');
+  XLSX.writeFile(wb, `gastos-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+document.getElementById('gastosBtn').addEventListener('click', async () => {
+  await loadGastos();
+  openGastosModal();
 });
 
 // ---------- Excel export ----------
