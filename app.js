@@ -987,7 +987,7 @@ function renderGastosModal() {
 
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <p class="mono" style="font-size:12px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0;">Gastos registrados</p>
-          <button id="exportGastosBtn" class="btn-secondary" style="padding:6px 12px; font-size:12px;">Exportar Excel</button>
+          <button id="exportGastosBtn" class="btn-secondary" style="padding:6px 12px; font-size:12px;">Exportar (Excel + fotos, ZIP)</button>
         </div>
         <div class="card table-scroll">
           <table>
@@ -1070,23 +1070,73 @@ function renderGastosModal() {
     btn.addEventListener('click', () => eliminarGasto(btn.dataset.delGasto));
   });
 
-  document.getElementById('exportGastosBtn').addEventListener('click', exportGastosExcel);
+  document.getElementById('exportGastosBtn').addEventListener('click', exportGastosZip);
 }
 
-function exportGastosExcel() {
-  const rows = gastos.map((g) => ({
-    'Fecha': g.fecha_gasto,
-    'Proveedor': g.proveedor,
-    'Concepto': g.concepto,
-    'Importe': parseFloat(g.importe) || 0,
-    'IVA': g.iva != null ? parseFloat(g.iva) : '',
-    'Categoría': g.categoria,
-  }));
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 14 }];
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Gastos');
-  XLSX.writeFile(wb, `gastos-${new Date().toISOString().slice(0, 10)}.xlsx`);
+function nombreArchivoSeguro(s) {
+  return String(s || 'sin-nombre')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // quitar acentos
+    .replace(/[^a-zA-Z0-9-_ ]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 40);
+}
+
+async function exportGastosZip() {
+  const btn = document.getElementById('exportGastosBtn');
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Preparando ZIP…';
+
+  try {
+    // 1. Construir el Excel (igual que antes, pero como datos en memoria, no descarga directa)
+    const rows = gastos.map((g) => ({
+      'Fecha': g.fecha_gasto,
+      'Proveedor': g.proveedor,
+      'Concepto': g.concepto,
+      'Importe': parseFloat(g.importe) || 0,
+      'IVA': g.iva != null ? parseFloat(g.iva) : '',
+      'Categoría': g.categoria,
+      'Foto ticket': g.imagen_path ? `tickets/${nombreArchivoSeguro(g.fecha_gasto)}-${nombreArchivoSeguro(g.proveedor)}.${g.imagen_path.split('.').pop()}` : '',
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 40 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Gastos');
+    const excelArrayBuffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
+
+    // 2. Crear el ZIP con el Excel + una carpeta "tickets" con cada foto
+    const zip = new JSZip();
+    zip.file(`gastos-${new Date().toISOString().slice(0, 10)}.xlsx`, excelArrayBuffer);
+    const carpetaTickets = zip.folder('tickets');
+
+    const conFoto = gastos.filter((g) => g.imagen_path);
+    let i = 0;
+    for (const g of conFoto) {
+      i++;
+      btn.textContent = `Descargando fotos… (${i}/${conFoto.length})`;
+      const { data, error } = await sb.storage.from('recibos').download(g.imagen_path);
+      if (error) { console.error('No se pudo descargar', g.imagen_path, error); continue; }
+      const ext = g.imagen_path.split('.').pop();
+      const nombre = `${nombreArchivoSeguro(g.fecha_gasto)}-${nombreArchivoSeguro(g.proveedor)}.${ext}`;
+      carpetaTickets.file(nombre, data);
+    }
+
+    // 3. Generar y descargar el ZIP
+    btn.textContent = 'Generando ZIP…';
+    const zipBlob = await zip.generateAsync({ type: 'blob' });
+    const url = URL.createObjectURL(zipBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gastos-${new Date().toISOString().slice(0, 10)}.zip`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Error generando el ZIP: ' + e.message);
+  }
+
+  btn.disabled = false;
+  btn.textContent = original;
 }
 
 document.getElementById('gastosBtn').addEventListener('click', async () => {
