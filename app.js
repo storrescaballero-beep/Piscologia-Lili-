@@ -84,6 +84,9 @@ async function initAuth() {
   }
   document.getElementById('userLabel').textContent = `Conectado como ${data.session.user.email}`;
   currentUserEmail = (data.session.user.email || '').toLowerCase();
+  if (currentUserEmail === ISABEL_EMAIL) {
+    document.getElementById('fiscalBtn').style.display = 'inline-block';
+  }
   return data.session;
 }
 
@@ -534,6 +537,238 @@ function renderModal() {
   document.getElementById('cancelBtn').addEventListener('click', closeModal);
   document.getElementById('overlay').addEventListener('click', (e) => { if (e.target.id === 'overlay') closeModal(); });
 }
+
+// ---------- Modelos fiscales (solo Isabel) ----------
+let fiscalDatos = {}; // { persona: { nif, clave, subclave } }
+let fiscalTab = 'config';
+let fiscalYear = new Date().getFullYear();
+let fiscalQuarter = Math.floor(new Date().getMonth() / 3) + 1;
+
+async function loadFiscalDatos() {
+  try {
+    const { data, error } = await sb.from('fiscal_datos').select('*');
+    if (error) throw error;
+    fiscalDatos = {};
+    (data || []).forEach((row) => { fiscalDatos[row.persona] = row; });
+  } catch (e) {
+    console.error('Error cargando datos fiscales', e);
+  }
+}
+
+async function saveFiscalDato(persona, patch) {
+  const current = fiscalDatos[persona] || { persona, nif: '', clave: 'G', subclave: '01' };
+  const next = { ...current, ...patch, persona };
+  const { error } = await sb.from('fiscal_datos').upsert(next);
+  if (error) { alert('Error guardando dato fiscal: ' + error.message); return; }
+  fiscalDatos[persona] = next;
+}
+
+function getAllPersonas() {
+  const psicologasEnUso = [...new Set(sessions.map((s) => (s.psicologa || '').trim()).filter(Boolean))];
+  return ['David', ...psicologasEnUso.sort()];
+}
+
+function sessionQuarter(fechaStr) {
+  const d = new Date(fechaStr + 'T00:00:00');
+  return Math.floor(d.getMonth() / 3) + 1;
+}
+
+function getQuarterSessions(year, quarter) {
+  return sessions.filter((s) => {
+    const d = new Date(s.fecha_sesion + 'T00:00:00');
+    return d.getFullYear() === year && sessionQuarter(s.fecha_sesion) === quarter;
+  });
+}
+
+function getYearSessions(year) {
+  return sessions.filter((s) => new Date(s.fecha_sesion + 'T00:00:00').getFullYear() === year);
+}
+
+function computeModelo111(list) {
+  let davidBase = 0, davidRet = 0;
+  const psicoMap = {}; // persona -> {base, ret}
+  list.forEach((s) => {
+    const f = sessionFinance(s);
+    davidBase += f.alquiler;
+    davidRet += f.irpfDavid;
+    const nombre = (s.psicologa || '').trim();
+    if (nombre) {
+      if (!psicoMap[nombre]) psicoMap[nombre] = { base: 0, ret: 0 };
+      psicoMap[nombre].base += f.brutoPsicologa;
+      psicoMap[nombre].ret += f.irpfPsicologa;
+    }
+  });
+  const psicoBaseTotal = Object.values(psicoMap).reduce((a, p) => a + p.base, 0);
+  const psicoRetTotal = Object.values(psicoMap).reduce((a, p) => a + p.ret, 0);
+  const nPerceptores = (davidBase > 0 ? 1 : 0) + Object.values(psicoMap).filter((p) => p.base > 0).length;
+  return {
+    casilla07: nPerceptores,
+    casilla08: davidBase + psicoBaseTotal,
+    casilla09: davidRet + psicoRetTotal,
+    casilla28: davidRet + psicoRetTotal,
+    davidBase, davidRet, psicoMap,
+  };
+}
+
+function computeModelo190(list) {
+  const m111 = computeModelo111(list);
+  const rows = [];
+  if (m111.davidBase > 0) {
+    const fd = fiscalDatos['David'] || {};
+    rows.push({ persona: 'David', nif: fd.nif || '', clave: fd.clave || 'G', subclave: fd.subclave || '01', base: m111.davidBase, retencion: m111.davidRet });
+  }
+  Object.entries(m111.psicoMap).forEach(([nombre, v]) => {
+    if (v.base <= 0) return;
+    const fd = fiscalDatos[nombre] || {};
+    rows.push({ persona: nombre, nif: fd.nif || '', clave: fd.clave || 'G', subclave: fd.subclave || '03', base: v.base, retencion: v.ret });
+  });
+  return rows;
+}
+
+function openFiscalModal() {
+  fiscalTab = 'config';
+  renderFiscalModal();
+}
+function closeFiscalModal() {
+  document.getElementById('fiscalModalRoot').innerHTML = '';
+}
+
+function fiscalRow(label, value) {
+  return `<div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line);">
+    <span style="font-size:13px; color:var(--ink-soft);">${label}</span>
+    <span class="mono" style="font-size:14px; font-weight:600;">${value}</span>
+  </div>`;
+}
+
+function renderFiscalModal() {
+  const years = [...new Set(sessions.map((s) => new Date(s.fecha_sesion + 'T00:00:00').getFullYear()))].sort((a, b) => b - a);
+  if (years.length === 0) years.push(fiscalYear);
+
+  const tabs = [
+    { id: 'config', label: 'Datos fiscales' },
+    { id: '111', label: 'Modelo 111 (trimestral)' },
+    { id: '190', label: 'Modelo 190 (anual)' },
+  ];
+
+  let body = '';
+
+  if (fiscalTab === 'config') {
+    const personas = getAllPersonas();
+    body = `<p style="font-size:13px; color:var(--ink-soft); margin:0 0 14px;">NIF y tipo de retención de cada persona. Se guarda una vez y se usa en los modelos.</p>`;
+    body += personas.map((p) => {
+      const fd = fiscalDatos[p] || { nif: '', clave: 'G', subclave: p === 'David' ? '01' : '03' };
+      return `
+        <div style="border:1px solid var(--line); border-radius:6px; padding:10px 14px; margin-bottom:8px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; align-items:end;">
+          <div class="field"><label>${esc(p)}</label>
+            <input value="${esc(fd.nif || '')}" placeholder="NIF" data-fiscal-nif="${esc(p)}" />
+          </div>
+          <div class="field"><label>Subclave (retención)</label>
+            <select data-fiscal-subclave="${esc(p)}">
+              <option value="01" ${fd.subclave === '01' ? 'selected' : ''}>G01 · General (15%)</option>
+              <option value="03" ${fd.subclave === '03' ? 'selected' : ''}>G03 · Inicio actividad (7%)</option>
+            </select>
+          </div>
+          <button data-fiscal-save="${esc(p)}" class="btn-primary" style="height:38px;">Guardar</button>
+        </div>`;
+    }).join('');
+  }
+
+  if (fiscalTab === '111') {
+    const m = computeModelo111(getQuarterSessions(fiscalYear, fiscalQuarter));
+    body = `
+      <div class="no-print" style="display:flex; gap:10px; margin-bottom:16px;">
+        <select id="fiscalYearSel111">${years.map((y) => `<option value="${y}" ${y === fiscalYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
+        <select id="fiscalQuarterSel">${[1, 2, 3, 4].map((q) => `<option value="${q}" ${q === fiscalQuarter ? 'selected' : ''}>${q}º Trimestre</option>`).join('')}</select>
+      </div>
+      <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">II. Rendimientos de actividades económicas — apartado del Modelo 111</p>
+      ${fiscalRow('Casilla 07 · Nº perceptores', m.casilla07)}
+      ${fiscalRow('Casilla 08 · Base total', eur(m.casilla08))}
+      ${fiscalRow('Casilla 09 · Retenciones', eur(m.casilla09))}
+      ${fiscalRow('Casilla 28 · Total a ingresar', eur(m.casilla28))}
+      <p style="font-size:11px; color:var(--ink-soft); margin:14px 0 6px;">Desglose (referencia interna, no va en el modelo):</p>
+      ${m.davidBase > 0 ? fiscalRow('David — base / retención', `${eur(m.davidBase)} / ${eur(m.davidRet)}`) : ''}
+      ${Object.entries(m.psicoMap).filter(([, v]) => v.base > 0).map(([n, v]) => fiscalRow(`${n} — base / retención`, `${eur(v.base)} / ${eur(v.ret)}`)).join('')}
+    `;
+  }
+
+  if (fiscalTab === '190') {
+    const rows190 = computeModelo190(getYearSessions(fiscalYear));
+    const totalBase = rows190.reduce((a, r) => a + r.base, 0);
+    const totalRet = rows190.reduce((a, r) => a + r.retencion, 0);
+    body = `
+      <div class="no-print" style="margin-bottom:16px;">
+        <select id="fiscalYearSel190">${years.map((y) => `<option value="${y}" ${y === fiscalYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
+      </div>
+      <div class="card table-scroll">
+        <table>
+          <thead><tr><th>Perceptor</th><th>NIF</th><th>Clave</th><th>Base</th><th>Retención</th></tr></thead>
+          <tbody>
+            ${rows190.map((r) => `<tr>
+              <td>${esc(r.persona)}</td>
+              <td class="mono">${esc(r.nif) || '<span style="color:var(--stamp-red);">Falta NIF</span>'}</td>
+              <td class="mono">${r.clave}${r.subclave}</td>
+              <td class="mono">${eur(r.base)}</td>
+              <td class="mono">${eur(r.retencion)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+      ${fiscalRow('Total base anual', eur(totalBase))}
+      ${fiscalRow('Total retenido anual', eur(totalRet))}
+      <p style="font-size:11px; color:var(--ink-soft); margin-top:10px;">Esto debe coincidir con la suma de los 4 modelos 111 del año.</p>
+    `;
+  }
+
+  document.getElementById('fiscalModalRoot').innerHTML = `
+    <div class="modal-overlay" id="fiscalOverlay">
+      <div class="modal" style="max-width:760px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+          <h3 class="serif" style="font-size:20px; color:var(--sage-deep); margin:0;">Modelos fiscales</h3>
+          <button type="button" id="fiscalCloseBtn" class="no-print" style="background:none; font-size:18px;">✕</button>
+        </div>
+        <div class="no-print" style="display:flex; gap:6px; margin-bottom:16px; border-bottom:1px solid var(--line);">
+          ${tabs.map((t) => `<button data-fiscal-tab="${t.id}" style="background:none; padding:8px 12px; border-bottom:2px solid ${fiscalTab === t.id ? 'var(--sage-deep)' : 'transparent'}; font-weight:${fiscalTab === t.id ? '600' : '400'}; color:var(--ink);">${t.label}</button>`).join('')}
+        </div>
+        <div>${body}</div>
+        <div class="no-print" style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
+          <button type="button" class="btn-secondary" onclick="window.print()">Imprimir / Guardar PDF</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('fiscalCloseBtn').addEventListener('click', closeFiscalModal);
+  document.getElementById('fiscalOverlay').addEventListener('click', (e) => { if (e.target.id === 'fiscalOverlay') closeFiscalModal(); });
+  document.querySelectorAll('[data-fiscal-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => { fiscalTab = btn.dataset.fiscalTab; renderFiscalModal(); });
+  });
+
+  if (fiscalTab === 'config') {
+    document.querySelectorAll('[data-fiscal-save]').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const persona = btn.dataset.fiscalSave;
+        const nif = document.querySelector(`[data-fiscal-nif="${persona}"]`).value.trim();
+        const subclave = document.querySelector(`[data-fiscal-subclave="${persona}"]`).value;
+        btn.textContent = 'Guardando…';
+        await saveFiscalDato(persona, { nif, clave: 'G', subclave });
+        btn.textContent = 'Guardado ✓';
+        setTimeout(() => { btn.textContent = 'Guardar'; }, 1500);
+      });
+    });
+  }
+  if (fiscalTab === '111') {
+    document.getElementById('fiscalYearSel111').addEventListener('change', (e) => { fiscalYear = parseInt(e.target.value); renderFiscalModal(); });
+    document.getElementById('fiscalQuarterSel').addEventListener('change', (e) => { fiscalQuarter = parseInt(e.target.value); renderFiscalModal(); });
+  }
+  if (fiscalTab === '190') {
+    document.getElementById('fiscalYearSel190').addEventListener('change', (e) => { fiscalYear = parseInt(e.target.value); renderFiscalModal(); });
+  }
+}
+
+document.getElementById('fiscalBtn').addEventListener('click', async () => {
+  await loadFiscalDatos();
+  openFiscalModal();
+});
 
 // ---------- Excel export ----------
 function exportExcel() {
