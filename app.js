@@ -365,11 +365,12 @@ function renderLiquidacion(s) {
   let html = `<h3 class="serif" style="font-size:17px; color:var(--sage-deep); margin:0 0 10px;">Liquidación · ${s.label}</h3>`;
 
   if (isabelView) {
+    const netoTrasGastos = s.brutoDirectora - s.totalGastos;
     // Cifra destacada: lo que Isabel gana de verdad este mes, ya descontado todo
     html += `
       <div style="background:var(--sage-deep); border-radius:8px; padding:16px 18px; margin-bottom:16px; color:#fff;">
-        <p class="mono" style="font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin:0; opacity:.8;">Tu neto real este mes — ya descontado David y todas las psicólogas</p>
-        <p class="serif" style="font-size:32px; margin:6px 0 0;">${eur(s.brutoDirectora)}</p>
+        <p class="mono" style="font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin:0; opacity:.8;">Tu neto real — ya descontado David, las psicólogas y tus gastos</p>
+        <p class="serif" style="font-size:32px; margin:6px 0 0;">${eur(netoTrasGastos)}</p>
       </div>`;
 
     html += splitBar([
@@ -377,12 +378,16 @@ function renderLiquidacion(s) {
       { label: 'Psicólogas (bruto)', value: s.brutoPsicologa, color: 'var(--ochre)' },
       { label: 'Tú (directora)', value: s.brutoDirectora, color: 'var(--sage-deep)' },
     ]);
-    html += `<p style="font-size:11px; color:var(--ink-soft); margin:8px 0 18px;">Reparto del total facturado (${eur(s.facturado)}) este mes</p>`;
+    html += `<p style="font-size:11px; color:var(--ink-soft); margin:8px 0 18px;">Reparto del total facturado (${eur(s.facturado)})</p>`;
 
-    html += `<p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0 0 8px;">Pago a cada psicóloga</p>`;
+    html += liquidRow('Tu parte como directora (bruto)', s.brutoDirectora, { strong: true });
+    html += liquidRow('Gastos del periodo', -s.totalGastos, { sub: true, color: 'var(--stamp-red)' });
+    html += liquidRow('Tu neto tras gastos', netoTrasGastos, { strong: true, color: 'var(--sage)' });
+
+    html += `<p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:16px 0 8px;">Pago a cada psicóloga</p>`;
     const breakdown = getPsicologaBreakdown(s.thisMonthSessions);
     if (breakdown.length === 0) {
-      html += `<p style="font-size:13px; color:var(--ink-soft);">Sin sesiones este mes.</p>`;
+      html += `<p style="font-size:13px; color:var(--ink-soft);">Sin sesiones en este periodo.</p>`;
     } else {
       html += breakdown.map((p) => `
         <div style="border:1px solid var(--line); border-radius:6px; padding:10px 14px; margin-bottom:8px;">
@@ -1151,10 +1156,26 @@ async function exportGastosZip() {
   const btn = document.getElementById('exportGastosBtn');
   const original = btn.textContent;
   btn.disabled = true;
-  btn.textContent = 'Preparando ZIP…';
+  btn.textContent = 'Preparando…';
+
+  const UN_ANIO_SEGUNDOS = 60 * 60 * 24 * 365;
 
   try {
-    // 1. Construir el Excel (igual que antes, pero como datos en memoria, no descarga directa)
+    // 1. Generar el nombre de archivo y el enlace firmado (válido ~1 año) de cada foto
+    const nombreArchivo = {};
+    const enlaceFoto = {};
+    const conFoto = gastos.filter((g) => g.imagen_path);
+    let i = 0;
+    for (const g of conFoto) {
+      i++;
+      btn.textContent = `Preparando enlaces… (${i}/${conFoto.length})`;
+      const ext = g.imagen_path.split('.').pop();
+      nombreArchivo[g.id] = `${nombreArchivoSeguro(g.fecha_gasto)}-${nombreArchivoSeguro(g.proveedor)}.${ext}`;
+      const { data, error } = await sb.storage.from('recibos').createSignedUrl(g.imagen_path, UN_ANIO_SEGUNDOS);
+      if (!error && data) enlaceFoto[g.id] = data.signedUrl;
+    }
+
+    // 2. Construir el Excel con columnas de nombre de archivo y enlace a la foto
     const rows = gastos.map((g) => ({
       'Fecha': g.fecha_gasto,
       'Proveedor': g.proveedor,
@@ -1162,32 +1183,38 @@ async function exportGastosZip() {
       'Importe': parseFloat(g.importe) || 0,
       'IVA': g.iva != null ? parseFloat(g.iva) : '',
       'Categoría': g.categoria,
-      'Foto ticket': g.imagen_path ? `tickets/${nombreArchivoSeguro(g.fecha_gasto)}-${nombreArchivoSeguro(g.proveedor)}.${g.imagen_path.split('.').pop()}` : '',
+      'Nombre archivo (dentro del ZIP)': nombreArchivo[g.id] ? `tickets/${nombreArchivo[g.id]}` : '',
+      'Enlace foto': enlaceFoto[g.id] ? 'Ver foto' : '',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 40 }];
+    ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 36 }, { wch: 12 }];
+
+    // Convertir la columna "Enlace foto" (índice 7, 0-based) en hipervínculos reales
+    gastos.forEach((g, idx) => {
+      if (!enlaceFoto[g.id]) return;
+      const cellRef = XLSX.utils.encode_cell({ r: idx + 1, c: 7 });
+      ws[cellRef] = { t: 's', v: 'Ver foto', l: { Target: enlaceFoto[g.id], Tooltip: 'Abrir foto del ticket (enlace válido ~1 año)' } };
+    });
+
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Gastos');
     const excelArrayBuffer = XLSX.write(wb, { type: 'array', bookType: 'xlsx' });
 
-    // 2. Crear el ZIP con el Excel + una carpeta "tickets" con cada foto
+    // 3. Crear el ZIP con el Excel + una carpeta "tickets" con cada foto
     const zip = new JSZip();
     zip.file(`gastos-${new Date().toISOString().slice(0, 10)}.xlsx`, excelArrayBuffer);
     const carpetaTickets = zip.folder('tickets');
 
-    const conFoto = gastos.filter((g) => g.imagen_path);
-    let i = 0;
+    i = 0;
     for (const g of conFoto) {
       i++;
       btn.textContent = `Descargando fotos… (${i}/${conFoto.length})`;
       const { data, error } = await sb.storage.from('recibos').download(g.imagen_path);
       if (error) { console.error('No se pudo descargar', g.imagen_path, error); continue; }
-      const ext = g.imagen_path.split('.').pop();
-      const nombre = `${nombreArchivoSeguro(g.fecha_gasto)}-${nombreArchivoSeguro(g.proveedor)}.${ext}`;
-      carpetaTickets.file(nombre, data);
+      carpetaTickets.file(nombreArchivo[g.id], data);
     }
 
-    // 3. Generar y descargar el ZIP
+    // 4. Generar y descargar el ZIP
     btn.textContent = 'Generando ZIP…';
     const zipBlob = await zip.generateAsync({ type: 'blob' });
     const url = URL.createObjectURL(zipBlob);
