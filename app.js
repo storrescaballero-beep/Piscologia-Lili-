@@ -654,7 +654,19 @@ function renderFiscalModal() {
 
   if (fiscalTab === 'config') {
     const personas = getAllPersonas();
-    body = `<p style="font-size:13px; color:var(--ink-soft); margin:0 0 14px;">NIF y tipo de retención de cada persona. Se guarda una vez y se usa en los modelos.</p>`;
+    const decl = fiscalDatos['__DECLARANTE__'] || { nif: '', nombre: '' };
+    body = `
+      <div style="border:2px solid var(--sage-deep); border-radius:6px; padding:12px 14px; margin-bottom:18px;">
+        <p style="font-weight:600; margin:0 0 8px; color:var(--sage-deep);">Tus datos como declarante (Isabel)</p>
+        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">Se usan para rellenar automáticamente el Modelo 190.</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+          <div class="field"><label>Tu NIF</label><input id="declaranteNif" value="${esc(decl.nif || '')}" /></div>
+          <div class="field"><label>Nombre completo</label><input id="declaranteNombre" value="${esc(decl.nombre || '')}" /></div>
+        </div>
+        <button id="saveDeclaranteBtn" class="btn-primary" style="margin-top:10px;">Guardar mis datos</button>
+      </div>
+    `;
+    body += `<p style="font-size:13px; color:var(--ink-soft); margin:0 0 14px;">NIF y tipo de retención de cada persona. Se guarda una vez y se usa en los modelos.</p>`;
     body += personas.map((p) => {
       const fd = fiscalDatos[p] || { nif: '', clave: 'G', subclave: p === 'David' ? '01' : '03' };
       return `
@@ -716,6 +728,7 @@ function renderFiscalModal() {
       ${fiscalRow('Total base anual', eur(totalBase))}
       ${fiscalRow('Total retenido anual', eur(totalRet))}
       <p style="font-size:11px; color:var(--ink-soft); margin-top:10px;">Esto debe coincidir con la suma de los 4 modelos 111 del año.</p>
+      <button id="descargarModelo190Btn" class="btn-primary no-print" style="margin-top:14px;">Descargar Modelo 190 relleno (PDF editable)</button>
     `;
   }
 
@@ -744,6 +757,15 @@ function renderFiscalModal() {
   });
 
   if (fiscalTab === 'config') {
+    document.getElementById('saveDeclaranteBtn').addEventListener('click', async () => {
+      const nif = document.getElementById('declaranteNif').value.trim();
+      const nombre = document.getElementById('declaranteNombre').value.trim();
+      const btn = document.getElementById('saveDeclaranteBtn');
+      btn.textContent = 'Guardando…';
+      await saveFiscalDato('__DECLARANTE__', { nif, nombre });
+      btn.textContent = 'Guardado ✓';
+      setTimeout(() => { btn.textContent = 'Guardar mis datos'; }, 1500);
+    });
     document.querySelectorAll('[data-fiscal-save]').forEach((btn) => {
       btn.addEventListener('click', async () => {
         const persona = btn.dataset.fiscalSave;
@@ -762,7 +784,55 @@ function renderFiscalModal() {
   }
   if (fiscalTab === '190') {
     document.getElementById('fiscalYearSel190').addEventListener('change', (e) => { fiscalYear = parseInt(e.target.value); renderFiscalModal(); });
+    document.getElementById('descargarModelo190Btn').addEventListener('click', () => generarModelo190PDF(fiscalYear));
   }
+}
+
+async function generarModelo190PDF(year) {
+  const decl = fiscalDatos['__DECLARANTE__'] || {};
+  if (!decl.nif || !decl.nombre) {
+    alert('Antes de descargar, rellena tus datos como declarante en la pestaña "Datos fiscales".');
+    return;
+  }
+  const rows190 = computeModelo190(getYearSessions(year));
+  const totalBase = rows190.reduce((a, r) => a + r.base, 0);
+  const totalRet = rows190.reduce((a, r) => a + r.retencion, 0);
+  const nPerceptores = rows190.length;
+
+  const btn = document.getElementById('descargarModelo190Btn');
+  btn.disabled = true;
+  btn.textContent = 'Generando…';
+
+  try {
+    const templateBytes = await fetch('assets/modelo-190.pdf').then((res) => {
+      if (!res.ok) throw new Error('No se pudo cargar la plantilla del Modelo 190');
+      return res.arrayBuffer();
+    });
+    const pdfDoc = await PDFLib.PDFDocument.load(templateBytes);
+    const form = pdfDoc.getForm();
+
+    form.getTextField('dato.1').setText(String(year));
+    form.getTextField('dato.a.nif.1').setText(decl.nif);
+    form.getTextField('dato.2').setText(decl.nombre);
+    form.getTextField('dato.8').setText(String(nPerceptores));
+    form.getTextField('dato.9').setText(totalBase.toFixed(2).replace('.', ','));
+    form.getTextField('dato.10').setText(totalRet.toFixed(2).replace('.', ','));
+    // No se aplana (no flatten): el PDF sigue siendo editable para que Isabel pueda ajustar algo si hace falta.
+
+    const pdfBytes = await pdfDoc.save();
+    const blob = new Blob([pdfBytes], { type: 'application/pdf' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `modelo-190-${year}.pdf`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('Error generando el PDF: ' + e.message);
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Descargar Modelo 190 relleno (PDF editable)';
 }
 
 document.getElementById('fiscalBtn').addEventListener('click', async () => {
