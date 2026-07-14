@@ -15,6 +15,8 @@ const DIRECTORA_PCT = 0.40;    // parte de Isabel (directora) sobre ese mismo im
 const PSICOLOGA_IRPF = 0.07;   // retención a las psicólogas
 
 let currentUserEmail = '';
+let periodoModo = 'mes'; // 'mes' | 'anio'
+let periodoAnio = new Date().getFullYear();
 
 function alquilerDavid(s) {
   return (s.centro === DAVID_CENTRO && s.modalidad === 'Presencial') ? DAVID_ALQUILER : 0;
@@ -218,16 +220,44 @@ function getFiltered() {
   });
 }
 
-function getStats() {
+function getPeriodSessions() {
   const now = new Date();
-  const raw = now.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-  const thisMonthLabel = raw.charAt(0).toUpperCase() + raw.slice(1);
-  const thisMonth = sessions.filter((s) => monthLabel(s.fecha_sesion) === thisMonthLabel);
-  const cobrado = thisMonth.filter((s) => s.estado_pago === 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
-  const pendiente = thisMonth.filter((s) => s.estado_pago !== 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
+  if (periodoModo === 'mes') {
+    return sessions.filter((s) => {
+      const d = new Date(s.fecha_sesion + 'T00:00:00');
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    });
+  }
+  return sessions.filter((s) => new Date(s.fecha_sesion + 'T00:00:00').getFullYear() === periodoAnio);
+}
+
+function getPeriodGastos() {
+  const now = new Date();
+  if (periodoModo === 'mes') {
+    return gastos.filter((g) => {
+      const d = new Date(g.fecha_gasto + 'T00:00:00');
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    });
+  }
+  return gastos.filter((g) => new Date(g.fecha_gasto + 'T00:00:00').getFullYear() === periodoAnio);
+}
+
+function periodoLabel() {
+  if (periodoModo === 'mes') {
+    const raw = new Date().toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }
+  return `Año ${periodoAnio}`;
+}
+
+function getStats() {
+  const periodo = getPeriodSessions();
+  const cobrado = periodo.filter((s) => s.estado_pago === 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
+  const pendiente = periodo.filter((s) => s.estado_pago !== 'Pagado').reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const sinQuipu = sessions.filter((s) => s.estado_pago === 'Pagado' && !s.quipu).length;
-  const f = sumFinance(thisMonth);
-  return { count: thisMonth.length, cobrado, pendiente, sinQuipu, label: thisMonthLabel, thisMonthSessions: thisMonth, ...f };
+  const f = sumFinance(periodo);
+  const totalGastos = getPeriodGastos().reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
+  return { count: periodo.length, cobrado, pendiente, sinQuipu, label: periodoLabel(), thisMonthSessions: periodo, totalGastos, ...f };
 }
 
 function getPsicologaBreakdown(list) {
@@ -241,8 +271,38 @@ function getPsicologaBreakdown(list) {
     .sort((a, b) => b.brutoPsicologa - a.brutoPsicologa);
 }
 
+function renderPeriodoSelector() {
+  const el = document.getElementById('periodoSelector');
+  if (!el) return;
+  const anios = [...new Set([
+    ...sessions.map((s) => new Date(s.fecha_sesion + 'T00:00:00').getFullYear()),
+    ...gastos.map((g) => new Date(g.fecha_gasto + 'T00:00:00').getFullYear()),
+  ])].sort((a, b) => b - a);
+  if (anios.length === 0) anios.push(new Date().getFullYear());
+
+  el.innerHTML = `
+    <select id="periodoModoSel" style="width:auto;">
+      <option value="mes" ${periodoModo === 'mes' ? 'selected' : ''}>Este mes</option>
+      <option value="anio" ${periodoModo === 'anio' ? 'selected' : ''}>Año</option>
+    </select>
+    ${periodoModo === 'anio' ? `<select id="periodoAnioSel" style="width:auto;">${anios.map((y) => `<option value="${y}" ${y === periodoAnio ? 'selected' : ''}>${y}</option>`).join('')}</select>` : ''}
+  `;
+  document.getElementById('periodoModoSel').addEventListener('change', (e) => {
+    periodoModo = e.target.value;
+    render();
+  });
+  if (periodoModo === 'anio') {
+    document.getElementById('periodoAnioSel').addEventListener('change', (e) => {
+      periodoAnio = parseInt(e.target.value);
+      render();
+    });
+  }
+}
+
+
 // ---------- Rendering ----------
 function render() {
+  renderPeriodoSelector();
   renderStats();
   renderFilters();
   renderTable();
@@ -250,13 +310,18 @@ function render() {
 
 function renderStats() {
   const s = getStats();
+  const isabelView = currentUserEmail === ISABEL_EMAIL;
+  const subPeriodo = periodoModo === 'mes' ? 'este mes' : `en ${periodoAnio}`;
   const cards = [
-    { label: s.label, value: String(s.count), sub: 'sesiones este mes', color: 'var(--blue)' },
-    { label: 'Facturado', value: eur(s.facturado), sub: 'total del mes', color: 'var(--sage-deep)' },
-    { label: 'Cobrado', value: eur(s.cobrado), sub: 'este mes', color: 'var(--sage)' },
-    { label: 'Pendiente', value: eur(s.pendiente), sub: 'por cobrar este mes', color: 'var(--ochre)' },
+    { label: s.label, value: String(s.count), sub: 'sesiones', color: 'var(--blue)' },
+    { label: 'Facturado', value: eur(s.facturado), sub: subPeriodo, color: 'var(--sage-deep)' },
+    { label: 'Cobrado', value: eur(s.cobrado), sub: subPeriodo, color: 'var(--sage)' },
+    { label: 'Pendiente', value: eur(s.pendiente), sub: `por cobrar ${subPeriodo}`, color: 'var(--ochre)' },
     { label: 'Sin Quipu', value: String(s.sinQuipu), sub: 'pagos sin contabilizar', color: 'var(--stamp-red)' },
   ];
+  if (isabelView) {
+    cards.push({ label: 'Gastos', value: eur(s.totalGastos), sub: subPeriodo, color: 'var(--stamp-red)' });
+  }
   document.getElementById('stats').innerHTML = cards.map((c) => `
     <div class="stat-card" style="border-left-color:${c.color};">
       <p class="mono" style="font-size:11px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.04em; margin:0;">${c.label}</p>
@@ -1196,5 +1261,7 @@ document.getElementById('exportBtn').addEventListener('click', exportExcel);
   const session = await initAuth();
   if (!session) return;
   await loadSessions();
+  await loadGastos();
+  render();
   subscribeRealtime();
 })();
