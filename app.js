@@ -6,6 +6,15 @@ const MODALIDADES = ['Presencial', 'Online'];
 const PSICOLOGAS = ['Isabel', 'Raquel', 'Te quiero mucho'];
 const PRECIOS_SERVICIO = { individual: 65, pareja: 70 };
 
+// ---------- Reglas fiscales verificadas (autónomos, IRPF, 2026) ----------
+const CATEGORIAS_GASTO = ['Alquiler', 'Suministros', 'Material', 'Formación', 'Software', 'Dietas/Manutención', 'Regalos a pacientes', 'Kit Digital', 'Otros'];
+const SUMINISTROS_PORCENTAJE = 0.30; // % fijo que aplica Hacienda sobre la parte de vivienda afecta
+const DIETA_LIMITES = {
+  Espana: { sinPernocta: 26.67, conPernocta: 53.34 },
+  Extranjero: { sinPernocta: 48.08, conPernocta: 91.35 },
+};
+const REGALOS_LIMITE_PCT = 0.01; // 1% de la cifra de negocio anual (atenciones a clientes)
+
 const ISABEL_EMAIL = 'iperezfraile@gmail.com'; // Directora: ve todo, se lleva el 40% restante
 const DAVID_CENTRO = 'Centro David';
 const DAVID_ALQUILER = 10;     // € fijos por sesión presencial en el centro de David
@@ -89,6 +98,7 @@ async function initAuth() {
   if (currentUserEmail === ISABEL_EMAIL) {
     document.getElementById('fiscalBtn').style.display = 'inline-block';
     document.getElementById('gastosBtn').style.display = 'inline-block';
+    document.getElementById('asistenteBtn').style.display = 'inline-block';
   }
   return data.session;
 }
@@ -725,14 +735,19 @@ function renderFiscalModal() {
 
   if (fiscalTab === 'config') {
     const personas = getAllPersonas();
-    const decl = fiscalDatos['__DECLARANTE__'] || { nif: '', nombre: '' };
+    const decl = fiscalDatos['__DECLARANTE__'] || { nif: '', nombre: '', porcentaje_vivienda: '' };
     body = `
       <div style="border:2px solid var(--sage-deep); border-radius:6px; padding:12px 14px; margin-bottom:18px;">
         <p style="font-weight:600; margin:0 0 8px; color:var(--sage-deep);">Tus datos como declarante (Isabel)</p>
-        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">Se usan para rellenar automáticamente el Modelo 190.</p>
+        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 10px;">Se usan para rellenar automáticamente el Modelo 190 y calcular deducciones.</p>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
           <div class="field"><label>Tu NIF</label><input id="declaranteNif" value="${esc(decl.nif || '')}" /></div>
           <div class="field"><label>Nombre completo</label><input id="declaranteNombre" value="${esc(decl.nombre || '')}" /></div>
+          <div class="field">
+            <label>% de tu vivienda destinado a la actividad</label>
+            <input id="declaranteVivienda" type="number" step="0.1" min="0" max="100" value="${esc(decl.porcentaje_vivienda ?? '')}" placeholder="ej: 20" />
+            <span style="font-size:11px; color:var(--ink-soft); display:block; margin-top:2px;">Debe coincidir con lo declarado en tu modelo 036/037</span>
+          </div>
         </div>
         <button id="saveDeclaranteBtn" class="btn-primary" style="margin-top:10px;">Guardar mis datos</button>
       </div>
@@ -831,9 +846,10 @@ function renderFiscalModal() {
     document.getElementById('saveDeclaranteBtn').addEventListener('click', async () => {
       const nif = document.getElementById('declaranteNif').value.trim();
       const nombre = document.getElementById('declaranteNombre').value.trim();
+      const porcentaje_vivienda = parseFloat(document.getElementById('declaranteVivienda').value) || null;
       const btn = document.getElementById('saveDeclaranteBtn');
       btn.textContent = 'Guardando…';
-      await saveFiscalDato('__DECLARANTE__', { nif, nombre });
+      await saveFiscalDato('__DECLARANTE__', { nif, nombre, porcentaje_vivienda });
       btn.textContent = 'Guardado ✓';
       setTimeout(() => { btn.textContent = 'Guardar mis datos'; }, 1500);
     });
@@ -916,6 +932,48 @@ let gastos = [];
 let gastoDraft = null; // datos extraídos pendientes de confirmar
 let gastoImagenFile = null;
 
+// ---------- Calculadoras de deducciones ----------
+
+// Suministros: (importe del gasto) x % vivienda afecta x 30%
+function calcularDeducibleSuministro(gasto, porcentajeVivienda) {
+  if (gasto.categoria !== 'Suministros' || !porcentajeVivienda) return null;
+  const importe = parseFloat(gasto.importe) || 0;
+  return importe * (porcentajeVivienda / 100) * SUMINISTROS_PORCENTAJE;
+}
+
+// Dietas: valida los 3 requisitos (pago electrónico, fuera de municipio, dentro de límite)
+function evaluarDieta(gasto) {
+  if (gasto.categoria !== 'Dietas/Manutención') return null;
+  const importe = parseFloat(gasto.importe) || 0;
+  const pais = gasto.pais === 'Extranjero' ? 'Extranjero' : 'Espana';
+  const limite = gasto.pernocta ? DIETA_LIMITES[pais].conPernocta : DIETA_LIMITES[pais].sinPernocta;
+
+  const problemas = [];
+  if (gasto.forma_pago === 'Efectivo') problemas.push('Pagado en efectivo (no deducible, debe ser pago electrónico)');
+  if (!gasto.fuera_municipio) problemas.push('No marcado como fuera de tu municipio habitual');
+  if (importe > limite) problemas.push(`Supera el límite diario de ${eur(limite)}`);
+
+  return {
+    limite,
+    excede: importe > limite,
+    valido: problemas.length === 0,
+    problemas,
+    deducible: problemas.length === 0 ? importe : Math.min(importe, limite),
+  };
+}
+
+// Regalos a pacientes: acumulado anual vs 1% de la facturación del año
+function calcularRegalosAnual(gastosLista, sesionesLista, anio) {
+  const totalRegalos = gastosLista
+    .filter((g) => g.categoria === 'Regalos a pacientes' && new Date(g.fecha_gasto + 'T00:00:00').getFullYear() === anio)
+    .reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
+  const facturadoAnual = sesionesLista
+    .filter((s) => new Date(s.fecha_sesion + 'T00:00:00').getFullYear() === anio)
+    .reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
+  const limite = facturadoAnual * REGALOS_LIMITE_PCT;
+  return { totalRegalos, facturadoAnual, limite, excede: totalRegalos > limite, pct: limite > 0 ? (totalRegalos / limite) * 100 : 0 };
+}
+
 async function loadGastos() {
   try {
     const { data, error } = await sb.from('gastos').select('*').order('fecha_gasto', { ascending: false });
@@ -977,6 +1035,10 @@ async function guardarGasto() {
       importe: parseFloat(gastoDraft.importe) || 0,
       iva: gastoDraft.iva !== '' && gastoDraft.iva != null ? parseFloat(gastoDraft.iva) : null,
       categoria: gastoDraft.categoria,
+      forma_pago: gastoDraft.forma_pago || null,
+      fuera_municipio: gastoDraft.fuera_municipio ?? null,
+      pernocta: gastoDraft.pernocta ?? null,
+      pais: gastoDraft.pais || 'España',
       imagen_path,
       creado_por: currentUserEmail,
     };
@@ -1012,10 +1074,14 @@ function closeGastosModal() {
 
 function renderGastosModal() {
   const totalImporte = gastos.reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
-  const CATEGORIAS = ['Alquiler', 'Suministros', 'Material', 'Formación', 'Software', 'Otros'];
+  const decl = fiscalDatos['__DECLARANTE__'] || {};
+  const porcentajeVivienda = decl.porcentaje_vivienda;
+  const anioActual = new Date().getFullYear();
+  const regalos = calcularRegalosAnual(gastos, sessions, anioActual);
 
   let formHtml = '';
   if (gastoDraft) {
+    const esDieta = gastoDraft.categoria === 'Dietas/Manutención';
     formHtml = `
       <div style="border:2px solid var(--sage-deep); border-radius:6px; padding:14px; margin-bottom:16px;">
         <p style="font-weight:600; margin:0 0 10px; color:var(--sage-deep);">Revisa los datos antes de guardar</p>
@@ -1026,9 +1092,36 @@ function renderGastosModal() {
           <div class="field"><label>Importe (€)</label><input type="number" step="0.01" id="gd_importe" value="${esc(gastoDraft.importe ?? '')}" /></div>
           <div class="field"><label>IVA (€, opcional)</label><input type="number" step="0.01" id="gd_iva" value="${esc(gastoDraft.iva ?? '')}" /></div>
           <div class="field"><label>Categoría</label>
-            <select id="gd_categoria">${CATEGORIAS.map((c) => `<option ${c === gastoDraft.categoria ? 'selected' : ''}>${c}</option>`).join('')}</select>
+            <select id="gd_categoria">${CATEGORIAS_GASTO.map((c) => `<option ${c === gastoDraft.categoria ? 'selected' : ''}>${c}</option>`).join('')}</select>
           </div>
         </div>
+        ${esDieta ? `
+          <div style="margin-top:10px; padding-top:10px; border-top:1px dashed var(--line); display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+            <div class="field"><label>Forma de pago</label>
+              <select id="gd_forma_pago">
+                <option value="Tarjeta" ${gastoDraft.forma_pago === 'Tarjeta' ? 'selected' : ''}>Tarjeta</option>
+                <option value="Transferencia" ${gastoDraft.forma_pago === 'Transferencia' ? 'selected' : ''}>Transferencia</option>
+                <option value="Efectivo" ${gastoDraft.forma_pago === 'Efectivo' ? 'selected' : ''}>Efectivo (no deducible)</option>
+              </select>
+            </div>
+            <div class="field"><label>País</label>
+              <select id="gd_pais">
+                <option value="España" ${gastoDraft.pais !== 'Extranjero' ? 'selected' : ''}>España</option>
+                <option value="Extranjero" ${gastoDraft.pais === 'Extranjero' ? 'selected' : ''}>Extranjero</option>
+              </select>
+            </div>
+            <div class="field"><label>&nbsp;</label>
+              <label style="display:flex; align-items:center; gap:6px; margin-top:8px; font-size:13px;">
+                <input type="checkbox" id="gd_pernocta" style="width:auto;" ${gastoDraft.pernocta ? 'checked' : ''} /> Con pernocta
+              </label>
+            </div>
+            <div class="field" style="grid-column:1/-1;">
+              <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
+                <input type="checkbox" id="gd_fuera_municipio" style="width:auto;" ${gastoDraft.fuera_municipio ? 'checked' : ''} /> Fuera de mi municipio habitual (requisito para que sea deducible)
+              </label>
+            </div>
+          </div>
+        ` : ''}
         <div style="display:flex; gap:8px; margin-top:12px;">
           <button id="guardarGastoBtn" class="btn-primary">Guardar gasto</button>
           <button id="cancelarGastoBtn" class="btn-secondary">Cancelar</button>
@@ -1036,12 +1129,38 @@ function renderGastosModal() {
       </div>`;
   }
 
+  const filaExtra = (g) => {
+    if (g.categoria === 'Suministros') {
+      if (!porcentajeVivienda) return `<span style="font-size:11px; color:var(--ochre);">Configura tu % de vivienda</span>`;
+      const ded = calcularDeducibleSuministro(g, porcentajeVivienda);
+      return `<span class="mono" style="font-size:12px; color:var(--sage);">${eur(ded)} deducible</span>`;
+    }
+    if (g.categoria === 'Dietas/Manutención') {
+      const ev = evaluarDieta(g);
+      if (ev.valido) return `<span class="mono" style="font-size:12px; color:var(--sage);">${eur(ev.deducible)} deducible ✓</span>`;
+      return `<span style="font-size:11px; color:var(--stamp-red);">⚠ ${ev.problemas.join(' · ')}</span>`;
+    }
+    return '';
+  };
+
   document.getElementById('gastosModalRoot').innerHTML = `
     <div class="modal-overlay" id="gastosOverlay">
-      <div class="modal" style="max-width:760px;">
+      <div class="modal" style="max-width:820px;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
           <h3 class="serif" style="font-size:20px; color:var(--sage-deep); margin:0;">Gastos</h3>
           <button type="button" id="gastosCloseBtn" style="background:none; font-size:18px;">✕</button>
+        </div>
+
+        ${!porcentajeVivienda ? `<div style="background:var(--ochre-bg); border-radius:6px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
+          💡 Para que se calculen solos los suministros de casa, configura tu % de vivienda afecta en <b>Modelos fiscales → Datos fiscales</b>.
+        </div>` : ''}
+
+        <div style="border:1px solid var(--line); border-radius:6px; padding:10px 14px; margin-bottom:14px; ${regalos.excede ? 'background:var(--stamp-red-bg);' : ''}">
+          <div style="display:flex; justify-content:space-between; font-size:13px;">
+            <span>Regalos a pacientes ${anioActual} — límite deducible (1% facturación)</span>
+            <span class="mono" style="font-weight:600; color:${regalos.excede ? 'var(--stamp-red)' : 'var(--sage)'};">${eur(regalos.totalRegalos)} / ${eur(regalos.limite)}</span>
+          </div>
+          ${regalos.excede ? `<p style="font-size:12px; color:var(--stamp-red); margin:4px 0 0;">Te has pasado del límite — lo que exceda no es deducible.</p>` : ''}
         </div>
 
         <div style="margin-bottom:14px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -1061,7 +1180,7 @@ function renderGastosModal() {
         </div>
         <div class="card table-scroll">
           <table>
-            <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>IVA</th><th>Categoría</th><th></th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Proveedor</th><th>Concepto</th><th>Importe</th><th>IVA</th><th>Categoría</th><th>Deducible</th><th></th></tr></thead>
             <tbody>
               ${gastos.map((g) => `<tr>
                 <td class="mono" style="white-space:nowrap;">${g.fecha_gasto}</td>
@@ -1070,6 +1189,7 @@ function renderGastosModal() {
                 <td class="mono">${eur(g.importe)}</td>
                 <td class="mono">${g.iva != null ? eur(g.iva) : '—'}</td>
                 <td>${esc(g.categoria)}</td>
+                <td>${filaExtra(g)}</td>
                 <td><button data-del-gasto="${g.id}" style="background:none; color:var(--stamp-red);">✕</button></td>
               </tr>`).join('')}
             </tbody>
@@ -1092,6 +1212,10 @@ function renderGastosModal() {
       importe: '',
       iva: '',
       categoria: 'Otros',
+      forma_pago: 'Tarjeta',
+      pais: 'España',
+      pernocta: false,
+      fuera_municipio: false,
     };
     renderGastosModal();
   });
@@ -1111,6 +1235,10 @@ function renderGastosModal() {
         importe: extraido.importe ?? '',
         iva: extraido.iva ?? '',
         categoria: extraido.categoria || 'Otros',
+        forma_pago: 'Tarjeta',
+        pais: 'España',
+        pernocta: false,
+        fuera_municipio: false,
       };
       renderGastosModal();
     } catch (err) {
@@ -1119,14 +1247,31 @@ function renderGastosModal() {
     }
   });
 
+  function capturarCamposDraft() {
+    if (!gastoDraft) return;
+    gastoDraft.fecha_gasto = document.getElementById('gd_fecha').value;
+    gastoDraft.proveedor = document.getElementById('gd_proveedor').value;
+    gastoDraft.concepto = document.getElementById('gd_concepto').value;
+    gastoDraft.importe = document.getElementById('gd_importe').value;
+    gastoDraft.iva = document.getElementById('gd_iva').value;
+    gastoDraft.categoria = document.getElementById('gd_categoria').value;
+    const fp = document.getElementById('gd_forma_pago');
+    if (fp) gastoDraft.forma_pago = fp.value;
+    const pais = document.getElementById('gd_pais');
+    if (pais) gastoDraft.pais = pais.value;
+    const pernocta = document.getElementById('gd_pernocta');
+    if (pernocta) gastoDraft.pernocta = pernocta.checked;
+    const fuera = document.getElementById('gd_fuera_municipio');
+    if (fuera) gastoDraft.fuera_municipio = fuera.checked;
+  }
+
   if (gastoDraft) {
+    document.getElementById('gd_categoria').addEventListener('change', () => {
+      capturarCamposDraft();
+      renderGastosModal();
+    });
     document.getElementById('guardarGastoBtn').addEventListener('click', () => {
-      gastoDraft.fecha_gasto = document.getElementById('gd_fecha').value;
-      gastoDraft.proveedor = document.getElementById('gd_proveedor').value;
-      gastoDraft.concepto = document.getElementById('gd_concepto').value;
-      gastoDraft.importe = document.getElementById('gd_importe').value;
-      gastoDraft.iva = document.getElementById('gd_iva').value;
-      gastoDraft.categoria = document.getElementById('gd_categoria').value;
+      capturarCamposDraft();
       guardarGasto();
     });
     document.getElementById('cancelarGastoBtn').addEventListener('click', () => {
@@ -1176,23 +1321,37 @@ async function exportGastosZip() {
     }
 
     // 2. Construir el Excel con columnas de nombre de archivo y enlace a la foto
-    const rows = gastos.map((g) => ({
-      'Fecha': g.fecha_gasto,
-      'Proveedor': g.proveedor,
-      'Concepto': g.concepto,
-      'Importe': parseFloat(g.importe) || 0,
-      'IVA': g.iva != null ? parseFloat(g.iva) : '',
-      'Categoría': g.categoria,
-      'Nombre archivo (dentro del ZIP)': nombreArchivo[g.id] ? `tickets/${nombreArchivo[g.id]}` : '',
-      'Enlace foto': enlaceFoto[g.id] ? 'Ver foto' : '',
-    }));
+    const porcentajeVivienda = (fiscalDatos['__DECLARANTE__'] || {}).porcentaje_vivienda;
+    const rows = gastos.map((g) => {
+      let deducible = '';
+      let nota = '';
+      if (g.categoria === 'Suministros' && porcentajeVivienda) {
+        deducible = calcularDeducibleSuministro(g, porcentajeVivienda);
+      } else if (g.categoria === 'Dietas/Manutención') {
+        const ev = evaluarDieta(g);
+        deducible = ev.deducible;
+        nota = ev.valido ? '' : ev.problemas.join(' · ');
+      }
+      return {
+        'Fecha': g.fecha_gasto,
+        'Proveedor': g.proveedor,
+        'Concepto': g.concepto,
+        'Importe': parseFloat(g.importe) || 0,
+        'IVA': g.iva != null ? parseFloat(g.iva) : '',
+        'Categoría': g.categoria,
+        'Deducible': deducible,
+        'Nota': nota,
+        'Nombre archivo (dentro del ZIP)': nombreArchivo[g.id] ? `tickets/${nombreArchivo[g.id]}` : '',
+        'Enlace foto': enlaceFoto[g.id] ? 'Ver foto' : '',
+      };
+    });
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 14 }, { wch: 36 }, { wch: 12 }];
+    ws['!cols'] = [{ wch: 12 }, { wch: 22 }, { wch: 26 }, { wch: 12 }, { wch: 10 }, { wch: 16 }, { wch: 12 }, { wch: 30 }, { wch: 36 }, { wch: 12 }];
 
-    // Convertir la columna "Enlace foto" (índice 7, 0-based) en hipervínculos reales
+    // Convertir la columna "Enlace foto" (índice 9, 0-based) en hipervínculos reales
     gastos.forEach((g, idx) => {
       if (!enlaceFoto[g.id]) return;
-      const cellRef = XLSX.utils.encode_cell({ r: idx + 1, c: 7 });
+      const cellRef = XLSX.utils.encode_cell({ r: idx + 1, c: 9 });
       ws[cellRef] = { t: 's', v: 'Ver foto', l: { Target: enlaceFoto[g.id], Tooltip: 'Abrir foto del ticket (enlace válido ~1 año)' } };
     });
 
@@ -1233,6 +1392,7 @@ async function exportGastosZip() {
 
 document.getElementById('gastosBtn').addEventListener('click', async () => {
   await loadGastos();
+  await loadFiscalDatos();
   openGastosModal();
 });
 
@@ -1284,6 +1444,105 @@ document.getElementById('newBtn').addEventListener('click', () => openModal(null
 document.getElementById('exportBtn').addEventListener('click', exportExcel);
 
 // ---------- Boot ----------
+// ---------- Asistente fiscal (solo Isabel) ----------
+let asistenteHistorial = [];
+
+function openAsistenteModal() {
+  if (asistenteHistorial.length === 0) {
+    asistenteHistorial.push({
+      role: 'assistant',
+      content: 'Hola, soy tu asistente de orientación fiscal. Puedo ayudarte con dudas sobre suministros de casa, dietas, regalos a pacientes y el Kit Digital. Para todo lo demás, o casos que no tenga claros, te diré que lo consultes con tu gestor. ¿En qué te ayudo?',
+    });
+  }
+  renderAsistenteModal();
+}
+function closeAsistenteModal() {
+  document.getElementById('asistenteModalRoot').innerHTML = '';
+}
+
+async function enviarPreguntaAsistente(texto) {
+  asistenteHistorial.push({ role: 'user', content: texto });
+  renderAsistenteModal();
+
+  try {
+    const res = await fetch('/api/asistente-fiscal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages: asistenteHistorial.map((m) => ({ role: m.role, content: m.content })) }),
+    });
+    const raw = await res.text();
+    let data;
+    try { data = JSON.parse(raw); } catch (e) { throw new Error(`Respuesta inesperada (${res.status}): ${raw.slice(0, 200)}`); }
+    if (!res.ok) throw new Error(data.error || 'Error del asistente');
+    asistenteHistorial.push({ role: 'assistant', content: data.reply });
+  } catch (e) {
+    asistenteHistorial.push({ role: 'assistant', content: `⚠ Hubo un error: ${e.message}` });
+  }
+  renderAsistenteModal();
+}
+
+function renderAsistenteModal() {
+  const burbujas = asistenteHistorial.map((m) => {
+    const esUser = m.role === 'user';
+    return `
+      <div style="display:flex; justify-content:${esUser ? 'flex-end' : 'flex-start'}; margin-bottom:10px;">
+        <div style="max-width:80%; padding:10px 14px; border-radius:10px; font-size:14px; line-height:1.4;
+          background:${esUser ? 'var(--sage-deep)' : 'var(--paper)'}; color:${esUser ? '#fff' : 'var(--ink)'};">
+          ${esc(m.content).replace(/\n/g, '<br>')}
+        </div>
+      </div>`;
+  }).join('');
+
+  document.getElementById('asistenteModalRoot').innerHTML = `
+    <div class="modal-overlay" id="asistenteOverlay">
+      <div class="modal" style="max-width:640px; display:flex; flex-direction:column; max-height:85vh;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 class="serif" style="font-size:20px; color:var(--sage-deep); margin:0;">Asistente fiscal</h3>
+          <button type="button" id="asistenteCloseBtn" style="background:none; font-size:18px;">✕</button>
+        </div>
+        <p style="font-size:12px; color:var(--ink-soft); margin:0 0 12px; background:var(--ochre-bg); padding:8px 12px; border-radius:6px;">
+          Orientación general, no sustituye a tu gestor. Para casos que no encajen en sus reglas, te lo dirá.
+        </p>
+        <div id="asistenteChatBody" style="flex:1; overflow-y:auto; padding:4px; margin-bottom:12px; min-height:200px;">
+          ${burbujas}
+          <div id="asistenteTyping" style="display:none; font-size:13px; color:var(--ink-soft); padding:4px 14px;">Escribiendo…</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input id="asistenteInput" placeholder="Escribe tu duda…" style="flex:1;" />
+          <button id="asistenteSendBtn" class="btn-primary">Enviar</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('asistenteCloseBtn').addEventListener('click', closeAsistenteModal);
+  document.getElementById('asistenteOverlay').addEventListener('click', (e) => { if (e.target.id === 'asistenteOverlay') closeAsistenteModal(); });
+
+  const chatBody = document.getElementById('asistenteChatBody');
+  chatBody.scrollTop = chatBody.scrollHeight;
+
+  const input = document.getElementById('asistenteInput');
+  const sendBtn = document.getElementById('asistenteSendBtn');
+
+  const enviar = async () => {
+    const texto = input.value.trim();
+    if (!texto) return;
+    input.value = '';
+    sendBtn.disabled = true;
+    input.disabled = true;
+    await enviarPreguntaAsistente(texto);
+    sendBtn.disabled = false;
+    input.disabled = false;
+    document.getElementById('asistenteInput')?.focus();
+  };
+
+  sendBtn.addEventListener('click', enviar);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') enviar(); });
+  input.focus();
+}
+
+document.getElementById('asistenteBtn').addEventListener('click', openAsistenteModal);
+
 (async function boot() {
   const session = await initAuth();
   if (!session) return;
