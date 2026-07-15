@@ -15,6 +15,50 @@ const DIETA_LIMITES = {
 };
 const REGALOS_LIMITE_PCT = 0.01; // 1% de la cifra de negocio anual (atenciones a clientes)
 
+// Gastos de difícil justificación — OJO: son dos cifras distintas, no confundir
+const GASTOS_DIFICIL_JUST_IRPF_PCT = 0.05; // para Modelo 130 / Renta, tope 2.000€/año
+const GASTOS_DIFICIL_JUST_IRPF_TOPE = 2000;
+const GASTOS_GENERICOS_RETA_PCT = 0.07; // para calcular el tramo de cotización (sin tope)
+
+// Cuota de autónomos 2026 (RETA) — 15 tramos, cifras aproximadas de la base mínima + MEI 0,9%.
+// Son orientativas: la cifra exacta puede variar, confirmar con la Seguridad Social o el gestor.
+const RETA_TRAMOS = [
+  { hasta: 670, cuota: 205.88 },
+  { hasta: 900, cuota: 220.36 },
+  { hasta: 1166.70, cuota: 260.24 },
+  { hasta: 1300, cuota: 275.61 },
+  { hasta: 1500, cuota: 291.66 },
+  { hasta: 1700, cuota: 302.00 },
+  { hasta: 1850, cuota: 320.02 },
+  { hasta: 2030, cuota: 340.00 },
+  { hasta: 2330, cuota: 380.00 },
+  { hasta: 2760, cuota: 423.30 },
+  { hasta: 3190, cuota: 463.00 },
+  { hasta: 3620, cuota: 503.00 },
+  { hasta: 4050, cuota: 544.00 },
+  { hasta: 6000, cuota: 590.00 },
+  { hasta: Infinity, cuota: 607.35 },
+];
+
+const AMORTIZACION_TIPOS = {
+  'Equipo informático (25%/año, 4 años)': 0.25,
+  'Mobiliario (10%/año, 10 años)': 0.10,
+  'Personalizado': null,
+};
+
+const CALENDARIO_FISCAL = [
+  { modelo: 'Modelo 130 (4º trim. año anterior)', mesInicio: 0, diaInicio: 1, mesFin: 0, diaFin: 30 },
+  { modelo: 'Modelo 111 (4º trim. año anterior)', mesInicio: 0, diaInicio: 1, mesFin: 0, diaFin: 30 },
+  { modelo: 'Modelo 190 (resumen anual)', mesInicio: 0, diaInicio: 1, mesFin: 0, diaFin: 31 },
+  { modelo: 'Modelo 130 (1er trimestre)', mesInicio: 3, diaInicio: 1, mesFin: 3, diaFin: 20 },
+  { modelo: 'Modelo 111 (1er trimestre)', mesInicio: 3, diaInicio: 1, mesFin: 3, diaFin: 20 },
+  { modelo: 'Renta (IRPF anual)', mesInicio: 3, diaInicio: 1, mesFin: 5, diaFin: 30 },
+  { modelo: 'Modelo 130 (2º trimestre)', mesInicio: 6, diaInicio: 1, mesFin: 6, diaFin: 20 },
+  { modelo: 'Modelo 111 (2º trimestre)', mesInicio: 6, diaInicio: 1, mesFin: 6, diaFin: 20 },
+  { modelo: 'Modelo 130 (3er trimestre)', mesInicio: 9, diaInicio: 1, mesFin: 9, diaFin: 20 },
+  { modelo: 'Modelo 111 (3er trimestre)', mesInicio: 9, diaInicio: 1, mesFin: 9, diaFin: 20 },
+];
+
 const ISABEL_EMAIL = 'iperezfraile@gmail.com'; // Directora: ve todo, se lleva el 40% restante
 const DAVID_CENTRO = 'Centro David';
 const DAVID_ALQUILER = 10;     // € fijos por sesión presencial en el centro de David
@@ -624,6 +668,12 @@ let fiscalDatos = {}; // { persona: { nif, clave, subclave } }
 let fiscalTab = 'config';
 let fiscalYear = new Date().getFullYear();
 let fiscalQuarter = Math.floor(new Date().getMonth() / 3) + 1;
+let calc130YaPagado = 0;
+let calc130Retenciones = 0;
+let calcCuotaRendimiento = '';
+let calcAmortImporte = '';
+let calcAmortTipo = Object.keys(AMORTIZACION_TIPOS)[0];
+let calcAmortPersonalizadoPct = '';
 
 async function loadFiscalDatos() {
   try {
@@ -729,6 +779,7 @@ function renderFiscalModal() {
     { id: 'config', label: 'Datos fiscales' },
     { id: '111', label: 'Modelo 111 (trimestral)' },
     { id: '190', label: 'Modelo 190 (anual)' },
+    { id: 'calc', label: 'Calculadoras' },
   ];
 
   let body = '';
@@ -818,6 +869,79 @@ function renderFiscalModal() {
     `;
   }
 
+  if (fiscalTab === 'calc') {
+    const hastaMes = fiscalQuarter * 3 - 1; // último mes del trimestre seleccionado
+    const m130 = calcularModelo130(fiscalYear, hastaMes, calc130YaPagado, calc130Retenciones);
+
+    const rendimientoAnualActual = rendimientoNetoAcumulado(fiscalYear, 11).neto;
+    if (calcCuotaRendimiento === '') calcCuotaRendimiento = rendimientoAnualActual.toFixed(0);
+    const cuota = calcularCuotaAutonomo(parseFloat(calcCuotaRendimiento) || 0);
+
+    const amortPct = calcAmortTipo === 'Personalizado' ? (parseFloat(calcAmortPersonalizadoPct) || 0) / 100 : AMORTIZACION_TIPOS[calcAmortTipo];
+    const amortAnual = calcularAmortizacion(parseFloat(calcAmortImporte) || 0, amortPct || 0);
+
+    const proximoPlazo = proximoPlazoFiscal();
+    const diasRestantes = Math.ceil((proximoPlazo.fechaFin - new Date()) / (1000 * 60 * 60 * 24));
+
+    body = `
+      <div class="no-print" style="display:flex; gap:10px; margin-bottom:14px;">
+        <select id="calcYearSel">${years.map((y) => `<option value="${y}" ${y === fiscalYear ? 'selected' : ''}>${y}</option>`).join('')}</select>
+        <select id="calcQuarterSel">${[1, 2, 3, 4].map((q) => `<option value="${q}" ${q === fiscalQuarter ? 'selected' : ''}>${q}º Trimestre</option>`).join('')}</select>
+      </div>
+
+      <div style="background:var(--sage-deep); color:#fff; border-radius:8px; padding:14px 18px; margin-bottom:18px;">
+        <p class="mono" style="font-size:11px; text-transform:uppercase; letter-spacing:.04em; margin:0; opacity:.85;">Próximo plazo fiscal</p>
+        <p class="serif" style="font-size:20px; margin:4px 0 0;">${proximoPlazo.modelo}</p>
+        <p style="font-size:13px; margin:2px 0 0; opacity:.9;">Hasta el ${proximoPlazo.fechaFin.toLocaleDateString('es-ES')} — ${diasRestantes >= 0 ? `quedan ${diasRestantes} días` : 'plazo ya pasado, revisa fechas'}</p>
+      </div>
+
+      <div style="border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:16px;">
+        <p style="font-weight:600; margin:0 0 4px; color:var(--sage-deep);">Provisión Modelo 130 (${fiscalQuarter}º trimestre ${fiscalYear})</p>
+        <p style="font-size:11px; color:var(--ink-soft); margin:0 0 10px;">Calculado con tus sesiones y gastos ya registrados hasta el fin de ese trimestre.</p>
+        ${liquidRow('Rendimiento neto acumulado (facturado − gastos)', m130.neto)}
+        ${liquidRow(`Gastos difícil justificación IRPF (5%, tope ${eur(GASTOS_DIFICIL_JUST_IRPF_TOPE)})`, -m130.gastosDificilJust, { sub: true })}
+        ${liquidRow('Rendimiento neto reducido', m130.netoReducido, { sub: true })}
+        ${liquidRow('Pago fraccionado (20%)', m130.pagoFraccionado, { strong: true })}
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:10px 0;">
+          <div class="field"><label>Ya pagado en trimestres anteriores</label><input type="number" step="0.01" id="calc130YaPagado" value="${calc130YaPagado}" /></div>
+          <div class="field"><label>Retenciones ya soportadas este año</label><input type="number" step="0.01" id="calc130Retenciones" value="${calc130Retenciones}" /></div>
+        </div>
+        ${liquidRow('A ingresar este trimestre', m130.aIngresar, { strong: true, color: 'var(--stamp-red)' })}
+        <button id="calc130RecalcularBtn" class="btn-secondary" style="margin-top:8px;">Recalcular</button>
+      </div>
+
+      <div style="border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:16px;">
+        <p style="font-weight:600; margin:0 0 4px; color:var(--sage-deep);">Simulador de cuota de autónomo (RETA 2026)</p>
+        <p style="font-size:11px; color:var(--ink-soft); margin:0 0 10px;">⚠ Cifras orientativas — confirma la exacta con la Seguridad Social o tu gestor antes de cambiar tu base.</p>
+        <div class="field"><label>Rendimiento neto anual previsto (€)</label><input type="number" step="1" id="calcCuotaRendimiento" value="${calcCuotaRendimiento}" /></div>
+        ${liquidRow('Tras 7% gastos genéricos, / 12 meses', cuota.mensual, { sub: true })}
+        ${liquidRow('Cuota mensual aproximada (con MEI)', cuota.cuota, { strong: true, color: 'var(--sage)' })}
+        <button id="calcCuotaRecalcularBtn" class="btn-secondary" style="margin-top:8px;">Recalcular</button>
+      </div>
+
+      <div style="border:1px solid var(--line); border-radius:6px; padding:14px; margin-bottom:16px;">
+        <p style="font-weight:600; margin:0 0 4px; color:var(--sage-deep);">Amortización de una compra (equipo, mobiliario)</p>
+        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; align-items:end;">
+          <div class="field"><label>Importe (€)</label><input type="number" step="0.01" id="calcAmortImporte" value="${calcAmortImporte}" /></div>
+          <div class="field"><label>Tipo de bien</label>
+            <select id="calcAmortTipo">${Object.keys(AMORTIZACION_TIPOS).map((t) => `<option ${t === calcAmortTipo ? 'selected' : ''}>${t}</option>`).join('')}</select>
+          </div>
+          ${calcAmortTipo === 'Personalizado' ? `<div class="field"><label>% anual</label><input type="number" step="0.1" id="calcAmortPct" value="${calcAmortPersonalizadoPct}" /></div>` : '<div></div>'}
+        </div>
+        ${liquidRow('Cuota deducible este año', amortAnual, { strong: true, color: 'var(--sage)' })}
+        <button id="calcAmortRecalcularBtn" class="btn-secondary" style="margin-top:8px;">Recalcular</button>
+      </div>
+
+      <div style="border:1px solid var(--line); border-radius:6px; padding:14px;">
+        <p style="font-weight:600; margin:0 0 8px; color:var(--sage-deep);">Calendario fiscal (plazos recurrentes)</p>
+        ${CALENDARIO_FISCAL.map((e) => `<div style="display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid var(--line); font-size:13px;">
+          <span>${e.modelo}</span>
+          <span class="mono" style="color:var(--ink-soft);">${String(e.diaInicio).padStart(2, '0')}–${String(e.diaFin).padStart(2, '0')} ${['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'][e.mesFin]}</span>
+        </div>`).join('')}
+      </div>
+    `;
+  }
+
   document.getElementById('fiscalModalRoot').innerHTML = `
     <div class="modal-overlay" id="fiscalOverlay">
       <div class="modal" style="max-width:760px;">
@@ -872,6 +996,31 @@ function renderFiscalModal() {
   if (fiscalTab === '190') {
     document.getElementById('fiscalYearSel190').addEventListener('change', (e) => { fiscalYear = parseInt(e.target.value); renderFiscalModal(); });
     document.getElementById('descargarModelo190Btn').addEventListener('click', () => generarModelo190PDF(fiscalYear));
+  }
+  if (fiscalTab === 'calc') {
+    document.getElementById('calcYearSel').addEventListener('change', (e) => { fiscalYear = parseInt(e.target.value); renderFiscalModal(); });
+    document.getElementById('calcQuarterSel').addEventListener('change', (e) => { fiscalQuarter = parseInt(e.target.value); renderFiscalModal(); });
+    document.getElementById('calc130RecalcularBtn').addEventListener('click', () => {
+      calc130YaPagado = parseFloat(document.getElementById('calc130YaPagado').value) || 0;
+      calc130Retenciones = parseFloat(document.getElementById('calc130Retenciones').value) || 0;
+      renderFiscalModal();
+    });
+    document.getElementById('calcCuotaRecalcularBtn').addEventListener('click', () => {
+      calcCuotaRendimiento = document.getElementById('calcCuotaRendimiento').value;
+      renderFiscalModal();
+    });
+    document.getElementById('calcAmortTipo').addEventListener('change', (e) => {
+      calcAmortImporte = document.getElementById('calcAmortImporte').value;
+      calcAmortTipo = e.target.value;
+      renderFiscalModal();
+    });
+    document.getElementById('calcAmortRecalcularBtn').addEventListener('click', () => {
+      calcAmortImporte = document.getElementById('calcAmortImporte').value;
+      calcAmortTipo = document.getElementById('calcAmortTipo').value;
+      const pctInput = document.getElementById('calcAmortPct');
+      if (pctInput) calcAmortPersonalizadoPct = pctInput.value;
+      renderFiscalModal();
+    });
   }
 }
 
@@ -972,6 +1121,56 @@ function calcularRegalosAnual(gastosLista, sesionesLista, anio) {
     .reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
   const limite = facturadoAnual * REGALOS_LIMITE_PCT;
   return { totalRegalos, facturadoAnual, limite, excede: totalRegalos > limite, pct: limite > 0 ? (totalRegalos / limite) * 100 : 0 };
+}
+
+// Rendimiento neto acumulado del año hasta una fecha límite (facturado - gastos)
+function rendimientoNetoAcumulado(anio, hastaMes) {
+  const facturado = sessions
+    .filter((s) => {
+      const d = new Date(s.fecha_sesion + 'T00:00:00');
+      return d.getFullYear() === anio && d.getMonth() <= hastaMes;
+    })
+    .reduce((a, s) => a + (parseFloat(s.precio) || 0), 0);
+  const gastado = gastos
+    .filter((g) => {
+      const d = new Date(g.fecha_gasto + 'T00:00:00');
+      return d.getFullYear() === anio && d.getMonth() <= hastaMes;
+    })
+    .reduce((a, g) => a + (parseFloat(g.importe) || 0), 0);
+  return { facturado, gastado, neto: facturado - gastado };
+}
+
+// Modelo 130: 20% del rendimiento neto acumulado (tras el 5% de gastos de difícil justificación), menos lo ya pagado/retenido
+function calcularModelo130(anio, hastaMes, yaPagado, retencionesSoportadas) {
+  const { neto } = rendimientoNetoAcumulado(anio, hastaMes);
+  const gastosDificilJust = Math.min(Math.max(neto, 0) * GASTOS_DIFICIL_JUST_IRPF_PCT, GASTOS_DIFICIL_JUST_IRPF_TOPE);
+  const netoReducido = neto - gastosDificilJust;
+  const pagoFraccionado = Math.max(netoReducido, 0) * 0.20;
+  const aIngresar = pagoFraccionado - (yaPagado || 0) - (retencionesSoportadas || 0);
+  return { neto, gastosDificilJust, netoReducido, pagoFraccionado, aIngresar };
+}
+
+// Cuota de autónomo (RETA): rendimiento neto anual -> tramo -> cuota aproximada + MEI
+function calcularCuotaAutonomo(rendimientoNetoAnual) {
+  const netoTrasGenericos = rendimientoNetoAnual * (1 - GASTOS_GENERICOS_RETA_PCT);
+  const mensual = netoTrasGenericos / 12;
+  const tramo = RETA_TRAMOS.find((t) => mensual <= t.hasta) || RETA_TRAMOS[RETA_TRAMOS.length - 1];
+  return { mensual, cuota: tramo.cuota };
+}
+
+function calcularAmortizacion(importe, porcentaje) {
+  return importe * porcentaje;
+}
+
+function proximoPlazoFiscal() {
+  const hoy = new Date();
+  const anio = hoy.getFullYear();
+  const eventos = CALENDARIO_FISCAL.map((e) => ({
+    ...e,
+    fechaFin: new Date(anio, e.mesFin, e.diaFin),
+  })).sort((a, b) => a.fechaFin - b.fechaFin);
+  const futuro = eventos.find((e) => e.fechaFin >= hoy);
+  return futuro || eventos[0];
 }
 
 async function loadGastos() {
