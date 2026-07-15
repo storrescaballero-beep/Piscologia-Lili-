@@ -24,8 +24,10 @@ module.exports = async function handler(req, res) {
   "concepto": "breve descripción de qué es el gasto, 2 a 6 palabras",
   "importe": numero total en euros con punto decimal y sin símbolo, ej: 45.30,
   "iva": numero del IVA si aparece desglosado, o null si no aparece,
-  "categoria": una de estas exactamente: "Alquiler", "Suministros", "Material", "Formación", "Software", "Otros"
-}`;
+  "categoria": una de estas exactamente: "Alquiler", "Suministros", "Material", "Formación", "Software", "Dietas/Manutención", "Regalos a pacientes", "Kit Digital", "Otros"
+}
+
+Nota: si el ticket es de un restaurante, bar o cafetería, clasifícalo como "Dietas/Manutención". Si es de un comercio y el concepto sugiere un regalo u obsequio, usa "Regalos a pacientes". Si tienes dudas, usa "Otros".`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
